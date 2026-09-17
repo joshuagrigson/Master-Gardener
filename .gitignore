@@ -1,0 +1,4 @@
+# Netlify CLI local state (site id only, recreated on deploy)
+.netlify/
+node_modules/
+.DS_Store
