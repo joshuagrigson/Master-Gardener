@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -488,7 +488,7 @@ async function renderBed() {
       <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Grid</span><button class="btn small" data-act="grid-scale" data-k="0.9">− Smaller</button><button class="btn small" data-act="grid-scale" data-k="1.1">＋ Bigger</button><button class="btn small" data-act="grid-mirror" title="Swap the left and right corners">⇄ Mirror</button></div>
       <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Camera looking</span><div class="seg grow seg-8">${DIRS.map(f => `<button type="button" class="${facing === f ? 'on' : ''}" data-act="set-facing" data-f="${f}">${f}</button>`).join('')}</div></div>
       <div class="row" style="margin-bottom:4px"><span class="hint" style="white-space:nowrap">Straighten photo</span><input type="range" id="straighten" min="-45" max="45" step="0.5" value="0" style="flex:1;accent-color:var(--cyan)" aria-label="Rotate the photo by a few degrees"><span class="mono hint" id="straighten-val" style="min-width:42px;text-align:right">0°</span></div>
-      <div class="row" style="margin-bottom:8px"><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90° clockwise">↻ Photo 90°</button><button class="btn small" data-act="edit-bed" data-id="${bed.id}">⟲ Bed shape & heading</button></div>
+      <div class="row" style="margin-bottom:8px"><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90° clockwise">↻ Photo 90°</button><button class="btn small" data-act="open-grid" data-id="${bed.id}">⊞ Grid ${bed.rows}×${bed.cols}</button><button class="btn small" data-act="edit-bed" data-id="${bed.id}">⟲ Bed shape</button></div>
       <div class="btn-row"><button class="btn primary" data-act="align-save">Save alignment</button><button class="btn" data-act="align-reset">Reset corners</button><button class="btn ghost" data-act="align-cancel">Cancel</button></div>`;
   } else if (S.mode === 'compare') {
     toolbar = `<div class="align-help">Tap another photo in the strip to compare against. Slide to reveal.</div>
@@ -498,6 +498,7 @@ async function renderBed() {
       <button class="btn small primary" data-act="take-photo">📷 Take photo</button>
       <button class="btn small" data-act="add-photo">🖼️ Add photos</button>
       ${photo ? `<button class="btn small" data-act="align-start">📐 Align grid</button>` : ''}
+      <button class="btn small" data-act="open-grid" data-id="${bed.id}" title="Change how the bed is split into cells">⊞ Grid ${bed.rows}×${bed.cols}</button>
       ${photos.length > 1 && photo ? `<button class="btn small" data-act="compare-start">⇄ Compare</button>` : ''}
       ${photo ? `<button class="btn small" data-act="photo-info" data-id="${photo.id}">ℹ️ Photo</button>` : ''}
       <button class="btn small" data-act="new-planting" data-bed="${bed.id}">＋ Plant</button>
@@ -521,7 +522,8 @@ async function renderStage(bed, photo, asOf, historical) {
   const owners = new Map(); active.forEach(p => p.cells.forEach(c => owners.set(c, p)));
   const w = photo ? photo.w : 1, h = photo ? photo.h : 1;
   const src = photo ? await urlFor(photo.id, 'full') : '';
-  const small = (Math.min(window.innerWidth, 760) / cols) < 105;
+  const cellPx = Math.min(window.innerWidth, 760) / cols;
+  const small = cellPx < 105, tiny = cellPx < 58;
   let polys = '';
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const idx = r * cols + c; if (isMasked(bed, idx)) continue;
@@ -539,7 +541,7 @@ async function renderStage(bed, photo, asOf, historical) {
     const [cx, cy] = centroid(cs);
     const pct = st.perennial ? 100 : clamp(Math.round(st.progress * 100), 0, 100);
     const dayTxt = st.perennial ? `y${Math.floor(st.days / 365) + 1}` : `d${st.days}`;
-    labels += `<div class="tag ${small ? 'small' : ''}" style="left:${(cx * 100).toFixed(2)}%;top:${(cy * 100).toFixed(2)}%;--c:${st.color};--c-soft:${hexRgba(st.color, 0.5)};--p:${pct}" data-act="open-planting" data-id="${p.id}" title="${esc(p.variety || st.crop.name)} · ${esc(st.stage)}"><span class="ring"></span><span>${st.crop.emoji}</span><span class="name">${esc(p.variety || st.crop.name)}</span><span class="d">${dayTxt}${st.left != null && st.left <= 0 && !st.perennial ? ' ✓' : ''}</span></div>`;
+    labels += `<div class="tag ${tiny ? 'small tiny' : small ? 'small' : ''}" style="left:${(cx * 100).toFixed(2)}%;top:${(cy * 100).toFixed(2)}%;--c:${st.color};--c-soft:${hexRgba(st.color, 0.5)};--p:${pct}" data-act="open-planting" data-id="${p.id}" title="${esc(p.variety || st.crop.name)} · ${esc(st.stage)}"><span class="ring"></span><span>${st.crop.emoji}</span><span class="name">${esc(p.variety || st.crop.name)}</span><span class="d">${dayTxt}${st.left != null && st.left <= 0 && !st.perennial ? ' ✓' : ''}</span></div>`;
   }
   const en = edgeNames(bed);
   const mids = [[en.top, H(0.5, 0)], [en.bottom, H(0.5, 1)], [en.left, H(0, 0.5)], [en.right, H(1, 0.5)]];
@@ -924,8 +926,7 @@ function bedForm(existing) {
     <label class="field"><span>Name</span><input id="b-name" value="${esc(BF.name)}"></label>
     <label class="field"><span>Description</span><input id="b-sub" value="${esc(BF.subtitle || '')}" placeholder="e.g. Back bed by the fence"></label>
     <div class="row"><label class="field grow"><span>Length (ft, along columns)</span><input id="b-len" type="number" min="1" max="100" step="0.5" value="${BF.lengthFt || ''}" placeholder="7"></label><label class="field grow"><span>Width (ft, along rows)</span><input id="b-wid" type="number" min="1" max="100" step="0.5" value="${BF.widthFt || ''}" placeholder="4"></label></div>
-    <div class="row" style="margin-bottom:12px"><span class="hint" style="white-space:nowrap">Cell size</span><div class="seg grow">${[1, 1.5, 2, 3].map(s => `<button type="button" data-act="bed-cell-size" data-s="${s}">${s} ft</button>`).join('')}</div></div>
-    <div class="row"><label class="field grow"><span>Rows</span><input id="b-rows" type="number" min="1" max="12" value="${BF.rows}"></label><label class="field grow"><span>Columns</span><input id="b-cols" type="number" min="1" max="16" value="${BF.cols}"></label></div>
+    ${gridControls(BF)}
     <div class="row"><label class="field grow"><span>Garden position: ft from west</span><input id="b-x" type="number" step="0.5" value="${Number.isFinite(BF.x) ? BF.x : 0}"></label><label class="field grow"><span>ft from north</span><input id="b-y" type="number" step="0.5" value="${Number.isFinite(BF.y) ? BF.y : 0}"></label></div>
     <span class="hint" style="display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--ink2)">Heading: the plan's top edge faces <b id="b-heading-name">${dirName(BF.heading)}</b> (<span id="b-heading-deg">${BF.heading}</span>°)</span>
     <div class="seg seg-8" style="margin-bottom:8px">${DIRS.map(d => `<button type="button" class="${dirName(BF.heading) === d && BF.heading % 45 === 0 ? 'on' : ''}" data-act="bed-heading" data-d="${dirDeg(d)}">${d}</button>`).join('')}</div>
@@ -936,10 +937,67 @@ function bedForm(existing) {
     <div class="btn-row"><button class="btn primary" data-act="save-bed">Save</button>${existing ? `<button class="btn danger" data-act="delete-bed" data-id="${BF.id}">Delete bed</button>` : ''}</div>`);
   const upd = () => { BF.name = $('#b-name').value; BF.subtitle = $('#b-sub').value; BF.lengthFt = +$('#b-len').value || 0; BF.widthFt = +$('#b-wid').value || 0; };
   ['#b-name', '#b-sub', '#b-len', '#b-wid'].forEach(s => $(s).addEventListener('input', () => { upd(); renderBedSummary(); }));
-  const dims = () => { BF.rows = clamp(+$('#b-rows').value || 1, 1, 12); BF.cols = clamp(+$('#b-cols').value || 1, 1, 16); renderBedMask(); };
-  $('#b-rows').addEventListener('change', dims); $('#b-cols').addEventListener('change', dims);
+  const dims = () => { BF.rows = clamp(+$('#g-rows').value || 1, 1, GRID_MAX.rows); BF.cols = clamp(+$('#g-cols').value || 1, 1, GRID_MAX.cols); renderGridPresets(BF); renderBedMask(); };
+  $('#g-rows').addEventListener('change', dims); $('#g-cols').addEventListener('change', dims);
   $('#b-heading').addEventListener('input', e => setBedHeading(+e.target.value));
-  renderBedMask();
+  renderGridPresets(BF); renderBedMask();
+}
+
+/* ---------- grid split controls (shared by the bed form and the quick Grid sheet) ---------- */
+const GRID_MAX = { rows: 60, cols: 120 }; // any split you can type; the map and overlay thin their labels as cells shrink
+let GF = null; // quick grid sheet draft
+const gridDraft = () => ($('#bed-mask-grid') ? BF : GF);
+function gridControls(d) {
+  return `<span class="hint" style="display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--ink2)">Grid split: rows × columns</span>
+    <div class="row" style="margin-bottom:8px">
+      <div class="stepper"><button type="button" data-act="grid-step" data-f="rows" data-d="-1" aria-label="Fewer rows">−</button><input id="g-rows" type="number" inputmode="numeric" min="1" max="${GRID_MAX.rows}" value="${d.rows}"><button type="button" data-act="grid-step" data-f="rows" data-d="1" aria-label="More rows">＋</button><span class="hint">rows</span></div>
+      <div class="stepper"><button type="button" data-act="grid-step" data-f="cols" data-d="-1" aria-label="Fewer columns">−</button><input id="g-cols" type="number" inputmode="numeric" min="1" max="${GRID_MAX.cols}" value="${d.cols}"><button type="button" data-act="grid-step" data-f="cols" data-d="1" aria-label="More columns">＋</button><span class="hint">columns</span></div>
+    </div>
+    <div class="variety-chips" id="grid-presets"></div>`;
+}
+function gridPresets(d) {
+  const out = []; const seen = new Set();
+  const add = (r, c, label) => { const k = `${r}x${c}`; if (r < 1 || c < 1 || r > GRID_MAX.rows || c > GRID_MAX.cols || seen.has(k)) return; seen.add(k); out.push({ r, c, label }); };
+  if (d.lengthFt > 0 && d.widthFt > 0) for (const s of [0.5, 1, 1.5, 2, 3]) add(Math.max(1, Math.round(d.widthFt / s)), Math.max(1, Math.round(d.lengthFt / s)), `${s} ft cells`);
+  [[1, 2], [2, 2], [2, 3], [2, 4], [3, 3], [3, 4], [3, 6], [4, 4], [4, 6], [4, 7], [4, 8], [6, 6], [6, 8], [8, 8]].forEach(([r, c]) => add(r, c, ''));
+  return out;
+}
+function renderGridPresets(d) {
+  const el = $('#grid-presets'); if (!el) return;
+  el.innerHTML = gridPresets(d).map(p => `<button type="button" class="chip ${d.rows === p.r && d.cols === p.c ? 'on' : ''}" data-act="grid-preset" data-r="${p.r}" data-c="${p.c}">${p.r}×${p.c}${p.label ? ` <span class="hint">${p.label}</span>` : ''}</button>`).join('');
+}
+function setGrid(d, rows, cols) {
+  d.rows = clamp(rows, 1, GRID_MAX.rows); d.cols = clamp(cols, 1, GRID_MAX.cols);
+  const ri = $('#g-rows'), ci = $('#g-cols'); if (ri) ri.value = d.rows; if (ci) ci.value = d.cols;
+  renderGridPresets(d);
+  if (d === BF) renderBedMask(); else renderGridPreview();
+}
+function gridSheet(bedId) {
+  const bed = bedById(bedId); if (!bed) return;
+  GF = { ...bed, mask: [...(bed.mask || [])] };
+  openSheet(`<h3>⊞ Grid split · ${esc(bed.name)} ${xBtn}</h3>
+    ${gridControls(GF)}
+    ${miniWrap(GF, 'grid-preview')}
+    <p class="hint" id="grid-summary" style="margin-bottom:10px"></p>
+    <div class="btn-row"><button class="btn primary" data-act="save-grid">Apply grid</button><button class="btn ghost" data-act="edit-bed" data-id="${bed.id}">More bed settings</button></div>`);
+  $('#g-rows').addEventListener('change', () => setGrid(GF, +$('#g-rows').value || 1, GF.cols));
+  $('#g-cols').addEventListener('change', () => setGrid(GF, GF.rows, +$('#g-cols').value || 1));
+  renderGridPresets(GF); renderGridPreview();
+}
+function renderGridPreview() {
+  const wrap = $('#grid-preview'); if (!wrap || !GF) return;
+  wrap.parentElement.outerHTML = miniWrap(GF, 'grid-preview');
+  const g = $('#grid-preview'); g.style.gridTemplateColumns = `repeat(${GF.cols},1fr)`;
+  const owners = new Map(); plantingsOf(GF.id).filter(p => p.status === 'active').forEach(p => p.cells.forEach(c => owners.set(c, p)));
+  g.innerHTML = Array.from({ length: GF.rows * GF.cols }, (_, i) => {
+    const off = GF.mask.includes(i); const o = owners.get(i);
+    return `<button type="button" class="${off ? 'off' : o ? 'mine' : ''}" style="${o && !off ? `--c:${CROP_GROUPS[cropByKey(o.cropKey).group].color}` : ''}" disabled>${off ? '' : o ? cropByKey(o.cropKey).emoji : ''}</button>`;
+  }).join('');
+  const el = $('#grid-summary');
+  const cw = GF.lengthFt && GF.cols ? (GF.lengthFt / GF.cols).toFixed(2).replace(/\.?0+$/, '') : null, ch = GF.widthFt && GF.rows ? (GF.widthFt / GF.rows).toFixed(2).replace(/\.?0+$/, '') : null;
+  const lost = plantingsOf(GF.id).filter(p => p.status === 'active' && p.cells.some(c => c >= GF.rows * GF.cols || GF.mask.includes(c))).length;
+  const same = GF.rows === bedById(GF.id).rows && GF.cols === bedById(GF.id).cols;
+  el.textContent = `${GF.rows * GF.cols} cells${cw && ch ? ` ≈ ${cw} × ${ch} ft each` : ''}. ${same ? 'No change yet.' : lost ? `${lost} active planting${lost === 1 ? '' : 's'} sit in cells that would no longer exist; those cells are dropped, the planting is kept.` : 'Existing plantings keep their cells.'} Tip: photo tags are per cell, so re-tag after a big change.`;
 }
 function setBedHeading(deg) {
   BF.heading = norm360(Math.round(deg));
@@ -971,17 +1029,22 @@ const ACT = {
   'open-bed': el => go(`#/bed/${el.dataset.id}`),
   'add-bed': () => bedForm(null),
   'edit-bed': el => bedForm(bedById(el.dataset.id)),
-  'bed-cell-size': el => {
-    const s = +el.dataset.s; if (!BF.lengthFt || !BF.widthFt) { toast('Enter length and width first'); return; }
-    BF.cols = clamp(Math.max(1, Math.round(BF.lengthFt / s)), 1, 16); BF.rows = clamp(Math.max(1, Math.round(BF.widthFt / s)), 1, 12);
-    $('#b-rows').value = BF.rows; $('#b-cols').value = BF.cols; $$('[data-act="bed-cell-size"]').forEach(b => b.classList.toggle('on', b === el)); renderBedMask();
+  'grid-step': el => { const d = gridDraft(); if (!d) return; const f = el.dataset.f; setGrid(d, d.rows + (f === 'rows' ? +el.dataset.d : 0), d.cols + (f === 'cols' ? +el.dataset.d : 0)); },
+  'grid-preset': el => { const d = gridDraft(); if (!d) return; setGrid(d, +el.dataset.r, +el.dataset.c); },
+  'open-grid': el => gridSheet(el.dataset.id),
+  'save-grid': async () => {
+    if (!GF) return; const bed = bedById(GF.id); if (!bed) return;
+    const rows = clamp(GF.rows, 1, GRID_MAX.rows), cols = clamp(GF.cols, 1, GRID_MAX.cols);
+    const nb = { ...bed, rows, cols, mask: (bed.mask || []).filter(i => i < rows * cols) };
+    for (const p of plantingsOf(bed.id)) { const keep = p.cells.filter(i => i < rows * cols && !nb.mask.includes(i)); if (keep.length !== p.cells.length) await savePlanting({ ...p, cells: keep }); }
+    await saveBed(nb); GF = null; closeSheet(); toast(`Grid set to ${rows}×${cols}`); render();
   },
   'bed-heading': el => setBedHeading(+el.dataset.d),
   'bed-mask-toggle': el => { const i = +el.dataset.idx; BF.mask = BF.mask.includes(i) ? BF.mask.filter(x => x !== i) : [...BF.mask, i].sort((a, b) => a - b); renderBedMask(); },
   'save-bed': async () => {
     const name = $('#b-name').value.trim(); if (!name) { toast('Give the bed a name'); return; }
     const { isNew, ...rest } = BF;
-    const nb = { ...rest, name, subtitle: $('#b-sub').value.trim(), mask: BF.mask.filter(i => i < BF.rows * BF.cols), x: +$('#b-x').value || 0, y: +$('#b-y').value || 0 };
+    const nb = { ...rest, name, subtitle: $('#b-sub').value.trim(), rows: clamp(BF.rows, 1, GRID_MAX.rows), cols: clamp(BF.cols, 1, GRID_MAX.cols), mask: BF.mask.filter(i => i < BF.rows * BF.cols), x: +$('#b-x').value || 0, y: +$('#b-y').value || 0 };
     if (nb.mask.length >= nb.rows * nb.cols) { toast('At least one cell has to be part of the bed'); return; }
     if (!isNew) {
       for (const p of plantingsOf(nb.id)) { const keep = p.cells.filter(i => i < nb.rows * nb.cols && !nb.mask.includes(i)); if (keep.length !== p.cells.length) await savePlanting({ ...p, cells: keep }); }

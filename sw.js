@@ -1,7 +1,7 @@
 /* sw.js — offline shell for Master Gardener.
    Navigations: network first, fall back to the cached index.
    App files: stale-while-revalidate. Weather API: never cached here (the app caches it in IndexedDB). */
-const VERSION = 'mg-v1.4.0';
+const VERSION = 'mg-v1.5.0';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/db.js', '/crops.js', '/weather.js', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 

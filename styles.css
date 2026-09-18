@@ -312,6 +312,17 @@ main#view.drag-over { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .mini-grid button.taken { background: var(--c); opacity: 0.55; cursor: not-allowed; }
 .mini-grid button.mine { background: var(--c); opacity: 0.9; }
 
+/* Grid steppers */
+.stepper { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.stepper button { width: 40px; height: 40px; flex: none; border-radius: 10px; border: 1px solid var(--line2); background: var(--surface2); font-size: 20px; font-weight: 700; cursor: pointer; }
+.stepper button:active { background: var(--surface3); }
+.stepper input { width: 52px; text-align: center; padding: 8px 4px; font-weight: 700; font-size: 16px; }
+.stepper .hint { font-size: 11px; }
+.mini-grid button.off { min-height: 0; }
+.tag.tiny .d { display: none; }
+.tag.tiny { padding: 1px 3px; gap: 2px; }
+.tag.tiny .ring { width: 10px; height: 10px; }
+
 /* Health & flags */
 .health-picker { display: flex; gap: 6px; margin-bottom: 12px; }
 .health-picker button { flex: 1; padding: 10px 0; border-radius: 10px; border: 1px solid var(--line2); background: var(--bg2); cursor: pointer; font-size: 20px; }
