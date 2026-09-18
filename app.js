@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -39,6 +39,7 @@ const S = {
   view: 'beds', bedId: null, photoId: null, mode: 'view', compareId: null, selCell: null, alignDraft: null,
   beds: [], photos: [], plantings: [], logs: [], settings: { ...DEFAULT_SETTINGS },
   wx: null, wxErr: null, wxLoading: false, urls: new Map(), renderToken: 0,
+  gardenZoom: 1, gardenArrange: false,
 };
 const HEALTH = ['', '😟', '😕', '😐', '🙂', '🤩'];
 const FLAGS = [['watered', '💧 Watered'], ['fertilized', '🧪 Fertilized'], ['pests', '🐛 Pests'], ['disease', '🍂 Disease'], ['flowering', '🌸 Flowering'], ['fruit', '🍅 Fruit set'], ['harvested', '🧺 Harvested some'], ['pruned', '✂️ Pruned']];
@@ -158,6 +159,20 @@ function planQuad(bed) {
   const k = 0.82 / span;
   return rot.map(([x, y]) => [0.5 + x * k, 0.5 + y * k]);
 }
+/* Garden map geometry: north-up schematic, beds axis-aligned to the nearest quarter turn of their heading.
+   k = quarter turns clockwise. Plan cell (r,c) -> screen cell (sr,sc). */
+const bedTurns = bed => Math.round(bedHeading(bed) / 90) % 4;
+function bedFootprint(bed) {
+  const L = bed.lengthFt > 0 ? bed.lengthFt : bed.cols * 2, Wd = bed.widthFt > 0 ? bed.widthFt : bed.rows * 2;
+  const k = bedTurns(bed);
+  return k % 2 ? { w: Wd, h: L, k, scols: bed.rows, srows: bed.cols } : { w: L, h: Wd, k, scols: bed.cols, srows: bed.rows };
+}
+function toScreenCell(bed, k, r, c) {
+  if (k === 1) return { sr: c, sc: bed.rows - 1 - r };
+  if (k === 2) return { sr: bed.rows - 1 - r, sc: bed.cols - 1 - c };
+  if (k === 3) return { sr: bed.cols - 1 - c, sc: r };
+  return { sr: r, sc: c };
+}
 /* Whole-grid transforms in pixel space (normalized coords are not isotropic). rw/rh = stage size in px. */
 function quadTransform(quad, rw, rh, fn) {
   const px = quad.map(([x, y]) => [x * rw, y * rh]);
@@ -177,13 +192,24 @@ async function loadAll() {
   S.photos = photos; S.plantings = plantings; S.logs = logs;
   S.settings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
   if (!S.beds.length) await seedBeds();
+  await ensureBedPositions();
+}
+/* Beds without a garden position get stacked in a column, highest bed number at the top (north). Drag to rearrange. */
+async function ensureBedPositions() {
+  const missing = S.beds.filter(b => !(Number.isFinite(b.x) && Number.isFinite(b.y)));
+  if (!missing.length) return;
+  const placed = S.beds.filter(b => Number.isFinite(b.x) && Number.isFinite(b.y));
+  let y = placed.length ? Math.max(...placed.map(b => b.y + bedFootprint(b).h)) + 3 : 0;
+  for (const b of missing.sort((a, c) => (c.sort ?? 0) - (a.sort ?? 0))) {
+    const nb = { ...b, x: 0, y }; y += bedFootprint(nb).h + 3; await saveBed(nb);
+  }
 }
 async function seedBeds() {
   const now = new Date().toISOString();
   const beds = [
-    { id: uid(), name: 'Bed 1 · South', subtitle: 'Front bed: berries + cool season', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: 1, createdAt: now },
-    { id: uid(), name: 'Bed 2 · Middle', subtitle: 'Roots, bulbs, squash corner', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: 2, createdAt: now },
-    { id: uid(), name: 'Bed 3 · North', subtitle: 'Back bed by the fence: nightshades', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: 3, createdAt: now },
+    { id: uid(), name: 'Bed 1 · South', subtitle: 'Front bed: berries + cool season', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], x: 0, y: 14, sort: 1, createdAt: now },
+    { id: uid(), name: 'Bed 2 · Middle', subtitle: 'Roots, bulbs, squash corner', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], x: 0, y: 7, sort: 2, createdAt: now },
+    { id: uid(), name: 'Bed 3 · North', subtitle: 'Back bed by the fence: nightshades', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], x: 0, y: 0, sort: 3, createdAt: now },
   ];
   await DB.putMany('beds', beds); S.beds = beds;
 }
@@ -339,6 +365,7 @@ function route() {
   const [seg, id] = h.split('/');
   if (seg === 'bed' && id && bedById(id)) { if (S.view !== 'bed' || S.bedId !== id) { S.photoId = null; S.mode = 'view'; S.compareId = null; S.selCell = null; } S.view = 'bed'; S.bedId = id; }
   else if (seg === 'analytics') S.view = 'analytics';
+  else if (seg === 'garden') S.view = 'garden';
   else if (seg === 'settings') S.view = 'settings';
   else S.view = 'beds';
   if (S.view !== 'bed') { S.mode = 'view'; S.compareId = null; S.alignDraft = null; }
@@ -352,6 +379,7 @@ async function render() {
   if (S.view === 'beds') html = await renderBeds();
   else if (S.view === 'bed') html = await renderBed();
   else if (S.view === 'analytics') html = renderAnalytics();
+  else if (S.view === 'garden') html = renderGarden();
   else html = renderSettings();
   if (token !== S.renderToken) return;
   $('#view').innerHTML = html;
@@ -367,8 +395,10 @@ function renderTopbar() {
     acts.innerHTML = `<button class="icon-btn" data-act="take-photo" title="Take photo">📷</button><button class="icon-btn" data-act="add-photo" title="Add from library">🖼️</button><button class="icon-btn" data-act="edit-bed" data-id="${bed.id}" title="Bed settings">⋯</button>`;
   } else {
     back.hidden = true; title.textContent = 'Master Gardener';
-    sub.textContent = S.view === 'analytics' ? 'Live analytics' : S.view === 'settings' ? 'Settings & data' : 'Bed mapper · harvest tracker';
-    acts.innerHTML = S.view === 'analytics' ? `<button class="icon-btn" data-act="refresh-wx" title="Refresh weather">↻</button>` : S.view === 'beds' ? `<button class="icon-btn" data-act="add-bed" title="Add bed">＋</button>` : '';
+    sub.textContent = S.view === 'analytics' ? 'Live analytics' : S.view === 'settings' ? 'Settings & data' : S.view === 'garden' ? 'Garden map · north up' : 'Bed mapper · harvest tracker';
+    acts.innerHTML = S.view === 'analytics' ? `<button class="icon-btn" data-act="refresh-wx" title="Refresh weather">↻</button>`
+      : S.view === 'beds' ? `<button class="icon-btn" data-act="add-bed" title="Add bed">＋</button>`
+      : S.view === 'garden' ? `<button class="icon-btn" data-act="garden-zoom" data-z="-1" title="Zoom out">−</button><button class="icon-btn" data-act="garden-zoom" data-z="1" title="Zoom in">＋</button><button class="btn small ${S.gardenArrange ? 'on' : ''}" data-act="garden-arrange">${S.gardenArrange ? '✓ Done' : '⤧ Arrange'}</button>` : '';
   }
 }
 
@@ -585,6 +615,75 @@ function sparkline(logsDesc) {
     <line class="grid" x1="${padL}" x2="${W - padR + 6}" y1="${y(5).toFixed(1)}" y2="${y(5).toFixed(1)}"></line><line class="grid" x1="${padL}" x2="${W - padR + 6}" y1="${y(3).toFixed(1)}" y2="${y(3).toFixed(1)}"></line><line class="grid" x1="${padL}" x2="${W - padR + 6}" y1="${y(1).toFixed(1)}" y2="${y(1).toFixed(1)}"></line>
     <path class="ln" d="${path}"></path>${dots}
     <text class="lbl" x="${(W - padR + 12).toFixed(1)}" y="${(y(last.health) + 4).toFixed(1)}">${last.health}/5</text></svg>`;
+}
+
+/* ---------- garden map (digital view) ---------- */
+function renderGarden() {
+  const now = new Date();
+  if (!S.beds.length) return `<div class="empty"><strong>No beds yet</strong>Add a bed and it appears here.</div>`;
+  const fps = S.beds.map(b => ({ bed: b, fp: bedFootprint(b) }));
+  const minX = Math.min(...fps.map(f => f.bed.x)), minY = Math.min(...fps.map(f => f.bed.y));
+  const maxX = Math.max(...fps.map(f => f.bed.x + f.fp.w)), maxY = Math.max(...fps.map(f => f.bed.y + f.fp.h));
+  const pad = 1;
+  const gw = maxX - minX + pad * 2, gh = maxY - minY + pad * 2;
+  const avail = Math.min(window.innerWidth, 760) - 28;
+  const scale = clamp((avail / gw) * S.gardenZoom, 14, 120);
+  const px = ft => (ft * scale).toFixed(1);
+  const active = S.plantings.filter(p => activeAt(p, now));
+  const groups = new Set();
+  let beds = '';
+  for (const { bed, fp } of fps) {
+    const tileW = fp.w / fp.scols * scale, tileH = fp.h / fp.srows * scale;
+    const size = Math.min(tileW, tileH);
+    const cls = size < 40 ? 'xs' : size < 58 ? 'sm' : size < 92 ? 'md' : 'lg';
+    const occupied = new Set();
+    let tiles = '';
+    for (const p of active.filter(p => p.bedId === bed.id)) {
+      const st = statsFor(p, now); groups.add(st.crop.group);
+      const cells = p.cells.filter(i => i < bed.rows * bed.cols && !isMasked(bed, i)).map(i => toScreenCell(bed, fp.k, Math.floor(i / bed.cols), i % bed.cols));
+      if (!cells.length) continue;
+      const r0 = Math.min(...cells.map(c => c.sr)), r1 = Math.max(...cells.map(c => c.sr)), c0 = Math.min(...cells.map(c => c.sc)), c1 = Math.max(...cells.map(c => c.sc));
+      const solid = cells.length === (r1 - r0 + 1) * (c1 - c0 + 1);
+      const blocks = solid ? [{ r: r0, c: c0, rs: r1 - r0 + 1, cs: c1 - c0 + 1, main: true }] : cells.map((c, i) => ({ r: c.sr, c: c.sc, rs: 1, cs: 1, main: i === 0 }));
+      cells.forEach(c => occupied.add(c.sr * fp.scols + c.sc));
+      for (const bl of blocks) tiles += gardenTile(p, st, bl, cls);
+    }
+    for (let sr = 0; sr < fp.srows; sr++) for (let sc = 0; sc < fp.scols; sc++) {
+      if (occupied.has(sr * fp.scols + sc)) continue;
+      // map screen cell back to plan index to know if it is masked / which cell to plant
+      let planIdx = -1;
+      for (let r = 0; r < bed.rows && planIdx < 0; r++) for (let c = 0; c < bed.cols; c++) { const s = toScreenCell(bed, fp.k, r, c); if (s.sr === sr && s.sc === sc) { planIdx = r * bed.cols + c; break; } }
+      const off = planIdx < 0 || isMasked(bed, planIdx);
+      tiles += `<button class="gcell ${off ? 'off' : 'empty'}" style="grid-row:${sr + 1};grid-column:${sc + 1}" ${off ? 'disabled' : `data-act="garden-plant" data-bed="${bed.id}" data-idx="${planIdx}" title="Plant here"`}>${off ? '' : '＋'}</button>`;
+    }
+    const en = edgeNames(bed);
+    beds += `<div class="gbed" data-bed="${bed.id}" style="left:${px(bed.x - minX + pad)}px;top:${px(bed.y - minY + pad)}px;width:${px(fp.w)}px;height:${px(fp.h)}px">
+      <button class="gbed-title" data-act="open-bed" data-id="${bed.id}" title="Open this bed's photos">${esc(bed.name)} <span class="hint">${bed.lengthFt && bed.widthFt ? `${bed.lengthFt}×${bed.widthFt} ft` : `${bed.cols}×${bed.rows}`}${bedHeading(bed) % 90 ? ` · ${en.top}` : ''}</span></button>
+      <div class="ggrid ${cls}" style="grid-template-columns:repeat(${fp.scols},1fr);grid-template-rows:repeat(${fp.srows},1fr)">${tiles}</div>
+    </div>`;
+  }
+  const next = active.map(p => statsFor(p, now)).filter(s => !s.perennial).sort((a, b) => a.left - b.left)[0];
+  const legend = [...groups].map(g => `<span class="chip" style="--c:${CROP_GROUPS[g].color}"><span class="dot"></span>${esc(CROP_GROUPS[g].name)}</span>`).join('');
+  return `<div class="garden-head"><div class="hint">${plural(S.beds.length, 'bed')} · ${plural(active.length, 'planting')}${next ? ` · next harvest ${next.crop.emoji} ${esc(next.crop.name)} ${next.left <= 0 ? 'now' : relDays(next.left)}` : ''}</div>
+      ${S.gardenArrange ? `<div class="align-help">Drag a bed to where it sits in your yard (north is up). Positions snap to half a foot.</div>` : ''}</div>
+    <div class="garden-scroll ${S.gardenArrange ? 'arranging' : ''}"><div class="garden" id="garden" style="width:${px(gw)}px;height:${px(gh)}px" data-scale="${scale}" data-minx="${minX - pad}" data-miny="${minY - pad}">
+      <div class="north-rose">N<br>▲</div>
+      <div class="scalebar" style="width:${px(1)}px">1 ft</div>
+      ${beds}
+    </div></div>
+    ${legend ? `<div class="row wrap" style="margin-top:10px">${legend}</div>` : ''}
+    <p class="hint" style="margin-top:8px">Tap a tile for details and check-ins, ＋ to plant, a bed's name for its photos. Beds are drawn to the nearest quarter turn of their heading.</p>`;
+}
+function gardenTile(p, st, bl, cls) {
+  const pct = st.perennial ? 100 : clamp(st.progress * 100, 0, 100);
+  const left = st.perennial ? `year ${Math.floor(st.days / 365) + 1}` : st.left > 0 ? `${st.left} d left` : st.progress < 1.3 ? 'Ready' : 'Over';
+  const sev = st.sev === 'good' ? '' : st.sev;
+  return `<button class="gtile ${bl.main ? '' : 'cont'} ${st.left != null && st.left <= 0 && !st.perennial ? 'ready' : ''}" style="grid-row:${bl.r + 1}/span ${bl.rs};grid-column:${bl.c + 1}/span ${bl.cs};--c:${st.color}" data-act="open-planting" data-id="${p.id}" title="${esc(p.variety || st.crop.name)} · ${esc(st.stage)}">
+    <span class="gt-em">${st.crop.emoji}</span>
+    ${bl.main ? `<span class="gt-name">${esc(p.variety || st.crop.name)}</span><span class="gt-days"><b>Day ${st.days}</b><em>${left}</em></span>` : `<span class="gt-days"><b>d${st.days}</b></span>`}
+    ${bl.main && st.health ? `<span class="gt-health" title="Last check-in ${st.health}/5">${HEALTH[st.health]}</span>` : ''}
+    <i class="gt-bar"><i class="${sev}" style="width:${pct.toFixed(0)}%"></i></i>
+  </button>`;
 }
 
 function nextFrost(mmdd) {
@@ -827,6 +926,7 @@ function bedForm(existing) {
     <div class="row"><label class="field grow"><span>Length (ft, along columns)</span><input id="b-len" type="number" min="1" max="100" step="0.5" value="${BF.lengthFt || ''}" placeholder="7"></label><label class="field grow"><span>Width (ft, along rows)</span><input id="b-wid" type="number" min="1" max="100" step="0.5" value="${BF.widthFt || ''}" placeholder="4"></label></div>
     <div class="row" style="margin-bottom:12px"><span class="hint" style="white-space:nowrap">Cell size</span><div class="seg grow">${[1, 1.5, 2, 3].map(s => `<button type="button" data-act="bed-cell-size" data-s="${s}">${s} ft</button>`).join('')}</div></div>
     <div class="row"><label class="field grow"><span>Rows</span><input id="b-rows" type="number" min="1" max="12" value="${BF.rows}"></label><label class="field grow"><span>Columns</span><input id="b-cols" type="number" min="1" max="16" value="${BF.cols}"></label></div>
+    <div class="row"><label class="field grow"><span>Garden position: ft from west</span><input id="b-x" type="number" step="0.5" value="${Number.isFinite(BF.x) ? BF.x : 0}"></label><label class="field grow"><span>ft from north</span><input id="b-y" type="number" step="0.5" value="${Number.isFinite(BF.y) ? BF.y : 0}"></label></div>
     <span class="hint" style="display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--ink2)">Heading: the plan's top edge faces <b id="b-heading-name">${dirName(BF.heading)}</b> (<span id="b-heading-deg">${BF.heading}</span>°)</span>
     <div class="seg seg-8" style="margin-bottom:8px">${DIRS.map(d => `<button type="button" class="${dirName(BF.heading) === d && BF.heading % 45 === 0 ? 'on' : ''}" data-act="bed-heading" data-d="${dirDeg(d)}">${d}</button>`).join('')}</div>
     <input type="range" id="b-heading" min="0" max="355" step="5" value="${BF.heading}" style="width:100%;margin:0 0 12px;accent-color:var(--accent)" aria-label="Heading in degrees">
@@ -881,7 +981,7 @@ const ACT = {
   'save-bed': async () => {
     const name = $('#b-name').value.trim(); if (!name) { toast('Give the bed a name'); return; }
     const { isNew, ...rest } = BF;
-    const nb = { ...rest, name, subtitle: $('#b-sub').value.trim(), mask: BF.mask.filter(i => i < BF.rows * BF.cols) };
+    const nb = { ...rest, name, subtitle: $('#b-sub').value.trim(), mask: BF.mask.filter(i => i < BF.rows * BF.cols), x: +$('#b-x').value || 0, y: +$('#b-y').value || 0 };
     if (nb.mask.length >= nb.rows * nb.cols) { toast('At least one cell has to be part of the bed'); return; }
     if (!isNew) {
       for (const p of plantingsOf(nb.id)) { const keep = p.cells.filter(i => i < nb.rows * nb.cols && !nb.mask.includes(i)); if (keep.length !== p.cells.length) await savePlanting({ ...p, cells: keep }); }
@@ -924,6 +1024,9 @@ const ACT = {
   },
   'compare-start': () => { S.mode = 'compare'; S.compareId = null; render(); },
   'compare-end': () => { S.mode = 'view'; S.compareId = null; render(); },
+  'garden-zoom': el => { S.gardenZoom = clamp(S.gardenZoom * (+el.dataset.z > 0 ? 1.25 : 0.8), 0.4, 4); render(); },
+  'garden-arrange': () => { S.gardenArrange = !S.gardenArrange; render(); },
+  'garden-plant': el => { if (S.gardenArrange) return; plantingForm(el.dataset.bed, null, +el.dataset.idx); },
   'photo-info': el => photoSheet(el.dataset.id),
   'rotate-photo-sheet': async el => { closeSheet(); await rotatePhoto(el.dataset.id); toast('Rotated'); },
   'save-photo': async el => {
@@ -1116,6 +1219,29 @@ function afterRender() {
     const end = ev => { ptrs.delete(ev.pointerId); startGesture(); };
     stage.addEventListener('pointerup', end); stage.addEventListener('pointercancel', end);
   }
+  const garden = $('#garden');
+  if (garden && S.gardenArrange) {
+    const scale = +garden.dataset.scale, minX = +garden.dataset.minx, minY = +garden.dataset.miny;
+    let drag = null;
+    garden.addEventListener('pointerdown', ev => {
+      const el = ev.target.closest('.gbed'); if (!el) return;
+      const bed = bedById(el.dataset.bed); if (!bed) return;
+      drag = { el, bed, sx: ev.clientX, sy: ev.clientY, x0: bed.x, y0: bed.y };
+      try { garden.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic */ }
+      el.classList.add('lifted'); ev.preventDefault();
+    });
+    garden.addEventListener('pointermove', ev => {
+      if (!drag) return;
+      const nx = Math.round((drag.x0 + (ev.clientX - drag.sx) / scale) * 2) / 2, ny = Math.round((drag.y0 + (ev.clientY - drag.sy) / scale) * 2) / 2;
+      drag.nx = nx; drag.ny = ny;
+      drag.el.style.left = `${((nx - minX) * scale).toFixed(1)}px`; drag.el.style.top = `${((ny - minY) * scale).toFixed(1)}px`;
+    });
+    const end = async () => {
+      if (!drag) return; const d = drag; drag = null; d.el.classList.remove('lifted');
+      if (d.nx != null && (d.nx !== d.x0 || d.ny !== d.y0)) { await saveBed({ ...d.bed, x: d.nx, y: d.ny }); render(); }
+    };
+    garden.addEventListener('pointerup', end); garden.addEventListener('pointercancel', end);
+  }
   const straighten = $('#straighten');
   if (straighten) {
     const img = $('#stage img.stage-img'), val = $('#straighten-val');
@@ -1159,6 +1285,7 @@ document.addEventListener('submit', async ev => {
 });
 document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && $('#sheet-root').firstChild) closeSheet(); });
 $$('.tab').forEach(t => t.addEventListener('click', () => go(t.dataset.tab === 'beds' ? '#/beds' : `#/${t.dataset.tab}`)));
+window.addEventListener('resize', () => { if (S.view === 'garden') render(); });
 $('#back-btn').addEventListener('click', () => go('#/beds'));
 $('#file-camera').addEventListener('change', e => { importFiles(e.target.files, S.bedId); e.target.value = ''; });
 $('#file-library').addEventListener('change', e => { importFiles(e.target.files, S.bedId); e.target.value = ''; });
