@@ -186,6 +186,9 @@ main#view.drag-over { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .handle-dot::before { content: ""; position: absolute; inset: -14px; border-radius: 50%; }
 .compass-lbl { position: absolute; transform: translate(-50%, -50%); font: 700 10px ui-monospace, Menlo, monospace; color: var(--cyan); opacity: 0.85; letter-spacing: 0.1em; pointer-events: none; text-shadow: 0 0 6px #000, 0 0 2px #000; }
 .stage.aligning .cell { pointer-events: none; }
+.stage.aligning { cursor: move; }
+.stage img.stage-img { transform-origin: center center; }
+.north-rose { position: absolute; top: 10px; left: 12px; font: 700 11px/1.1 ui-monospace, Menlo, monospace; color: var(--accent); text-align: center; letter-spacing: 0.1em; pointer-events: none; text-shadow: 0 0 8px rgba(57, 255, 154, 0.6); }
 .thumb.cmp { border-color: var(--cyan); }
 .scan { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity: 0.7; pointer-events: none; animation: scan 1.4s ease-in-out 1 forwards; box-shadow: 0 0 12px var(--accent); }
 @keyframes scan { from { top: 0; opacity: 0.8; } to { top: 100%; opacity: 0; } }

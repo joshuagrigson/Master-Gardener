@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -146,6 +146,27 @@ function facingQuad(quad, facing, bed) {
   const rel = Math.round(norm360(dirDeg(facing) - bedHeading(bed)) / 90) * 90 % 360;
   return (REL[rel] || REL[0]).map(k => [...g[k]]);
 }
+/* Plan view: the bed rectangle drawn north-up, rotated by its heading and fitted into the square stage. */
+function planQuad(bed) {
+  const th = bedHeading(bed) * Math.PI / 180;
+  const real = bed.lengthFt > 0 && bed.widthFt > 0;
+  const L = real ? bed.lengthFt : bed.cols, Wd = real ? bed.widthFt : bed.rows;
+  const c = Math.cos(th), s = Math.sin(th);
+  const rot = [[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]].map(([x, y]) => [x * c - y * s, x * s + y * c]);
+  const xs = rot.map(p => p[0]), ys = rot.map(p => p[1]);
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+  const k = 0.82 / span;
+  return rot.map(([x, y]) => [0.5 + x * k, 0.5 + y * k]);
+}
+/* Whole-grid transforms in pixel space (normalized coords are not isotropic). rw/rh = stage size in px. */
+function quadTransform(quad, rw, rh, fn) {
+  const px = quad.map(([x, y]) => [x * rw, y * rh]);
+  const cx = px.reduce((s, p) => s + p[0], 0) / 4, cy = px.reduce((s, p) => s + p[1], 0) / 4;
+  return px.map(([x, y]) => fn(x - cx, y - cy)).map(([x, y]) => [clamp((x + cx) / rw, -0.25, 1.25), clamp((y + cy) / rh, -0.25, 1.25)]);
+}
+const rotateQuad = (quad, rw, rh, deg) => { const t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t); return quadTransform(quad, rw, rh, (x, y) => [x * c - y * s, x * s + y * c]); };
+const scaleQuad = (quad, rw, rh, k) => quadTransform(quad, rw, rh, (x, y) => [x * k, y * k]);
+const mirrorQuad = quad => [quad[1], quad[0], quad[3], quad[2]].map(p => [...p]);
 const centroid = poly => [poly.reduce((s, p) => s + p[0], 0) / poly.length, poly.reduce((s, p) => s + p[1], 0) / poly.length];
 const pts = poly => poly.map(([x, y]) => `${(x * 1000).toFixed(1)},${(y * 1000).toFixed(1)}`).join(' ');
 
@@ -270,6 +291,32 @@ async function rotateBlob(blob, q) {
     const g = c.getContext('2d'); g.translate(c.width, 0); g.rotate(Math.PI / 2); g.drawImage(img, 0, 0);
     return await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', q));
   } finally { URL.revokeObjectURL(url); }
+}
+/* Rotate pixels by an arbitrary angle (clockwise, degrees) into a canvas big enough to hold the whole turned image. */
+async function rotateBlobDeg(blob, deg, q) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImage(url);
+    const t = deg * Math.PI / 180, W = img.naturalWidth, H = img.naturalHeight;
+    const W2 = Math.ceil(Math.abs(W * Math.cos(t)) + Math.abs(H * Math.sin(t))), H2 = Math.ceil(Math.abs(W * Math.sin(t)) + Math.abs(H * Math.cos(t)));
+    const c = document.createElement('canvas'); c.width = W2; c.height = H2;
+    const g = c.getContext('2d'); g.fillStyle = '#0b1712'; g.fillRect(0, 0, W2, H2);
+    g.translate(W2 / 2, H2 / 2); g.rotate(t); g.drawImage(img, -W / 2, -H / 2);
+    const out = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', q));
+    return { blob: out, W, H, W2, H2 };
+  } finally { URL.revokeObjectURL(url); }
+}
+/* Straighten: the photo turns under the grid, the grid stays where it is on screen (its pixel offsets from the centre are kept). */
+async function straightenPhoto(id, deg) {
+  const ph = S.photos.find(p => p.id === id); const b = await DB.get('blobs', id); if (!ph || !b) return;
+  toast('Straightening…');
+  const full = await rotateBlobDeg(b.full, deg, 0.86), thumb = await rotateBlobDeg(b.thumb || b.full, deg, 0.8);
+  await DB.put('blobs', { id, full: full.blob, thumb: thumb.blob });
+  const u = S.urls.get(id); if (u) { URL.revokeObjectURL(u.full); URL.revokeObjectURL(u.thumb); S.urls.delete(id); }
+  const keep = ([x, y]) => [+((full.W2 / 2 + (x - 0.5) * full.W) / full.W2).toFixed(4), +((full.H2 / 2 + (y - 0.5) * full.H) / full.H2).toFixed(4)];
+  await savePhoto({ ...ph, w: full.W2, h: full.H2, quad: ph.quad.map(keep) });
+  if (S.mode === 'align' && S.alignDraft) S.alignDraft = S.alignDraft.map(keep);
+  render();
 }
 /* Rotate a stored photo 90° clockwise; the alignment quad rotates with it so tags stay on their cells. */
 async function rotatePhoto(id) {
@@ -406,9 +453,12 @@ async function renderBed() {
   if (S.mode === 'align') {
     const facing = S.alignFacing || photo.facing || 'N';
     const en = edgeNames(bed);
-    toolbar = `<div class="align-help">1. Tap the direction you were facing when you took the photo. 2. Drag the four corners onto the bed's real corners (each handle names its compass corner). This bed's top edge faces ${en.top}: ${bed.rows} rows ${en.top}→${en.bottom} × ${bed.cols} columns ${en.left}→${en.right}.</div>
+    toolbar = `<div class="align-help">Drag inside the grid to move it. Pinch with two fingers to resize and spin it. Drag a corner to match the bed's perspective. Each handle names its compass corner; this bed's top edge faces ${en.top} (${bed.rows} rows ${en.top}→${en.bottom} × ${bed.cols} columns ${en.left}→${en.right}).</div>
+      <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Grid</span><button class="btn small" data-act="grid-rotate" data-deg="-15" title="Spin grid 15° counter-clockwise">↺ 15°</button><button class="btn small" data-act="grid-rotate" data-deg="-2" title="Spin 2° counter-clockwise">↺ 2°</button><button class="btn small" data-act="grid-rotate" data-deg="2" title="Spin 2° clockwise">↻ 2°</button><button class="btn small" data-act="grid-rotate" data-deg="15" title="Spin grid 15° clockwise">↻ 15°</button></div>
+      <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Grid</span><button class="btn small" data-act="grid-scale" data-k="0.9">− Smaller</button><button class="btn small" data-act="grid-scale" data-k="1.1">＋ Bigger</button><button class="btn small" data-act="grid-mirror" title="Swap the left and right corners">⇄ Mirror</button></div>
       <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Camera looking</span><div class="seg grow seg-8">${DIRS.map(f => `<button type="button" class="${facing === f ? 'on' : ''}" data-act="set-facing" data-f="${f}">${f}</button>`).join('')}</div></div>
-      <div class="row" style="margin-bottom:8px"><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90°">↻ Rotate photo</button><button class="btn small" data-act="edit-bed" data-id="${bed.id}">⟲ Bed shape & heading</button></div>
+      <div class="row" style="margin-bottom:4px"><span class="hint" style="white-space:nowrap">Straighten photo</span><input type="range" id="straighten" min="-45" max="45" step="0.5" value="0" style="flex:1;accent-color:var(--cyan)" aria-label="Rotate the photo by a few degrees"><span class="mono hint" id="straighten-val" style="min-width:42px;text-align:right">0°</span></div>
+      <div class="row" style="margin-bottom:8px"><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90° clockwise">↻ Photo 90°</button><button class="btn small" data-act="edit-bed" data-id="${bed.id}">⟲ Bed shape & heading</button></div>
       <div class="btn-row"><button class="btn primary" data-act="align-save">Save alignment</button><button class="btn" data-act="align-reset">Reset corners</button><button class="btn ghost" data-act="align-cancel">Cancel</button></div>`;
   } else if (S.mode === 'compare') {
     toolbar = `<div class="align-help">Tap another photo in the strip to compare against. Slide to reveal.</div>
@@ -435,11 +485,11 @@ async function renderBed() {
 
 async function renderStage(bed, photo, asOf, historical) {
   const rows = bed.rows, cols = bed.cols;
-  const quad = S.mode === 'align' && S.alignDraft ? S.alignDraft : (photo ? photo.quad : defaultQuad(true));
+  const quad = S.mode === 'align' && S.alignDraft ? S.alignDraft : (photo ? photo.quad : planQuad(bed));
   const H = homography(quad);
   const active = plantingsOf(bed.id).filter(p => activeAt(p, asOf));
   const owners = new Map(); active.forEach(p => p.cells.forEach(c => owners.set(c, p)));
-  const w = photo ? photo.w : 4, h = photo ? photo.h : 3;
+  const w = photo ? photo.w : 1, h = photo ? photo.h : 1;
   const src = photo ? await urlFor(photo.id, 'full') : '';
   const small = (Math.min(window.innerWidth, 760) / cols) < 105;
   let polys = '';
@@ -473,6 +523,7 @@ async function renderStage(bed, photo, asOf, historical) {
     ${!photo && !active.length ? empty : ''}
     <svg class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none">${frame}${polys}</svg>
     <div class="labels">${compass}${S.mode === 'align' ? '' : labels}${handles}</div>
+    ${!photo ? `<div class="north-rose" title="Plan is drawn north-up">N<br>▲</div>` : ''}
     <span class="hud-corner tl"></span><span class="hud-corner tr"></span><span class="hud-corner bl"></span><span class="hud-corner br"></span>
     ${photo ? '<div class="scan"></div>' : ''}
     ${historical ? `<div class="asof">AS OF <b>${fmtDateY(asOf).toUpperCase()}</b> · ${daysBetween(asOf, new Date())} D AGO</div>` : ''}
@@ -632,6 +683,7 @@ function renderSettings() {
     <p class="hint">iPhone: open this site in Safari → Share → <b>Add to Home Screen</b>. Android: Chrome menu → <b>Install app</b>. It then opens full-screen and works offline in the garden (weather needs a signal).</p>
   </div>
   <div class="card"><h2>About</h2>
+    <div class="btn-row" style="margin-bottom:10px"><button class="btn" data-act="check-update">↻ Check for updates</button></div>
     <p class="hint">Master Gardener v${APP_VERSION}. Each bed has a heading: the direction its plan's top edge faces (set it in the bed's settings, any angle). Edge and corner labels on the plan, the photo overlay, and the align handles all follow it. Days-to-maturity defaults come from common seed-packet figures for each variety; edit them per planting. Growing degree days use base ${''}50°F for warm crops and 40°F for cool crops from Open-Meteo daily highs and lows.</p>
   </div>`;
 }
@@ -854,6 +906,14 @@ const ACT = {
   },
   'align-start': () => { const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph) return; S.mode = 'align'; S.alignDraft = ph.quad.map(p => [...p]); S.alignFacing = ph.facing || 'N'; render(); },
   'align-reset': () => { S.alignDraft = facingQuad(defaultQuad(false), S.alignFacing || 'N', bedById(S.bedId)); render(); },
+  'grid-rotate': el => { const r = $('#stage').getBoundingClientRect(); S.alignDraft = rotateQuad(S.alignDraft, r.width, r.height, +el.dataset.deg); redrawAlign($('#stage')); },
+  'grid-scale': el => { const r = $('#stage').getBoundingClientRect(); S.alignDraft = scaleQuad(S.alignDraft, r.width, r.height, +el.dataset.k); redrawAlign($('#stage')); },
+  'grid-mirror': () => { S.alignDraft = mirrorQuad(S.alignDraft); redrawAlign($('#stage')); },
+  'check-update': async () => {
+    toast('Checking for a newer version…');
+    try { const reg = await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } catch (e) { /* offline */ }
+    setTimeout(() => location.reload(), 1200);
+  },
   'align-cancel': () => { S.mode = 'view'; S.alignDraft = null; S.alignFacing = null; render(); },
   'set-facing': el => { S.alignFacing = el.dataset.f; S.alignDraft = facingQuad(S.alignDraft || defaultQuad(false), S.alignFacing, bedById(S.bedId)); render(); },
   'rotate-photo': el => rotatePhoto(el.dataset.id),
@@ -1019,17 +1079,52 @@ async function loadSample() {
 function afterRender() {
   const stage = $('#stage');
   if (stage && S.mode === 'align') {
-    let drag = null;
-    const norm = ev => { const r = stage.getBoundingClientRect(); return [clamp((ev.clientX - r.left) / r.width, 0, 1), clamp((ev.clientY - r.top) / r.height, 0, 1)]; };
+    const ptrs = new Map(); let g = null;
+    const rect = () => stage.getBoundingClientRect();
+    const norm = ev => { const r = rect(); return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height]; };
+    const px = ([x, y]) => { const r = rect(); return [x * r.width, y * r.height]; };
+    const snapshot = () => S.alignDraft.map(p => [...p]);
+    const startGesture = () => {
+      const list = [...ptrs.values()];
+      if (list.length >= 2) g = { type: 'pinch', ids: [...ptrs.keys()].slice(0, 2), a0: list[0].pt, b0: list[1].pt, quad0: snapshot() };
+      else if (list.length === 1) g = list[0].corner != null ? { type: 'corner', idx: list[0].corner } : { type: 'move', start: list[0].pt, quad0: snapshot() };
+      else g = null;
+    };
     stage.addEventListener('pointerdown', ev => {
-      const h = ev.target.closest('.handle-dot'); if (!h) return;
-      drag = +h.dataset.corner; h.setPointerCapture(ev.pointerId); ev.preventDefault();
+      if (ev.target.closest('input')) return;
+      const h = ev.target.closest('.handle-dot');
+      ptrs.set(ev.pointerId, { pt: norm(ev), corner: h ? +h.dataset.corner : null });
+      try { stage.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic or already-released pointer */ }
+      ev.preventDefault(); startGesture();
     });
     stage.addEventListener('pointermove', ev => {
-      if (drag == null) return; S.alignDraft[drag] = norm(ev); redrawAlign(stage);
+      const rec = ptrs.get(ev.pointerId); if (!rec || !g) return;
+      rec.pt = norm(ev);
+      if (g.type === 'corner') { S.alignDraft[g.idx] = [clamp(rec.pt[0], -0.1, 1.1), clamp(rec.pt[1], -0.1, 1.1)]; }
+      else if (g.type === 'move') { const dx = rec.pt[0] - g.start[0], dy = rec.pt[1] - g.start[1]; S.alignDraft = g.quad0.map(([x, y]) => [x + dx, y + dy]); }
+      else if (g.type === 'pinch') {
+        const a = ptrs.get(g.ids[0]), b = ptrs.get(g.ids[1]); if (!a || !b) return;
+        const [a0, b0, a1, b1] = [g.a0, g.b0, a.pt, b.pt].map(px);
+        const d0 = Math.hypot(b0[0] - a0[0], b0[1] - a0[1]) || 1, d1 = Math.hypot(b1[0] - a1[0], b1[1] - a1[1]);
+        const k = d1 / d0, th = Math.atan2(b1[1] - a1[1], b1[0] - a1[0]) - Math.atan2(b0[1] - a0[1], b0[0] - a0[0]);
+        const m0 = [(a0[0] + b0[0]) / 2, (a0[1] + b0[1]) / 2], m1 = [(a1[0] + b1[0]) / 2, (a1[1] + b1[1]) / 2];
+        const c = Math.cos(th), s = Math.sin(th), r = rect();
+        S.alignDraft = g.quad0.map(p => { const x = p[0] * r.width - m0[0], y = p[1] * r.height - m0[1]; return [(k * (x * c - y * s) + m1[0]) / r.width, (k * (x * s + y * c) + m1[1]) / r.height]; });
+      }
+      redrawAlign(stage);
     });
-    const end = () => { drag = null; };
+    const end = ev => { ptrs.delete(ev.pointerId); startGesture(); };
     stage.addEventListener('pointerup', end); stage.addEventListener('pointercancel', end);
+  }
+  const straighten = $('#straighten');
+  if (straighten) {
+    const img = $('#stage img.stage-img'), val = $('#straighten-val');
+    straighten.addEventListener('input', () => { if (img) img.style.transform = `rotate(${straighten.value}deg)`; val.textContent = `${(+straighten.value).toFixed(1).replace(/\.0$/, '')}°`; });
+    straighten.addEventListener('change', async () => {
+      const deg = +straighten.value; if (!deg) return;
+      const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph) return;
+      await straightenPhoto(ph.id, deg);
+    });
   }
   const range = $('#cmp-range');
   if (range) {
@@ -1081,6 +1176,13 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { re
   catch (e) { console.error(e); $('#view').innerHTML = `<div class="empty"><strong>Storage unavailable</strong>${esc(e.message)}. Private browsing on some phones blocks IndexedDB.</div>`; return; }
   route();
   loadWeather(false);
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const hadController = !!navigator.serviceWorker.controller; let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return; reloading = true;
+      toast('Updated to the latest version. Reloading…'); setTimeout(() => location.reload(), 800);
+    });
+    navigator.serviceWorker.register('sw.js').then(reg => reg.update().catch(() => {})).catch(() => {});
+  }
 })();
 })();
