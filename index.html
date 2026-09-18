@@ -33,7 +33,11 @@
       </div>
       <div class="row" id="topbar-actions"></div>
     </header>
-    <main id="view" aria-live="polite"></main>
+    <div class="shell">
+      <aside class="rail" id="rail-left" aria-label="Today in the garden"></aside>
+      <main id="view" aria-live="polite"></main>
+      <aside class="rail" id="rail-right" aria-label="Coming up"></aside>
+    </div>
     <nav class="tabbar" aria-label="Sections">
       <button class="tab active" data-tab="beds"><span class="ic">🌱</span>Beds</button>
       <button class="tab" data-tab="garden"><span class="ic">🗺️</span>Map</button>

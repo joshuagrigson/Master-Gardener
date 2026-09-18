@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.9.1';
+const APP_VERSION = '1.10.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -540,6 +540,71 @@ async function render() {
   renderTopbar();
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === (S.view === 'bed' ? 'beds' : S.view)));
   afterRender();
+  renderRails(token);
+}
+
+/* ---------- desktop rails: the Gardener's briefing on the left, what is coming up on the right ---------- */
+async function renderRails(token) {
+  const left = $('#rail-left'), right = $('#rail-right');
+  if (!left || !right) return;
+  if (window.innerWidth < 1120) { left.innerHTML = ''; right.innerHTML = ''; return; }
+  const now = new Date();
+  const bed = S.view === 'bed' ? bedById(S.bedId) : null;
+  const scope = bed ? p => p.bedId === bed.id : () => true;
+  const scopeName = bed ? bed.name : 'the garden';
+
+  /* LEFT: today's check, weather, season */
+  let L = '';
+  const gc = buildGardenCheck();
+  const items = bed ? bedCheckRows(bed).map(r => ({ sev: r.sev, title: `${r.crop.emoji} ${r.p.variety || r.crop.name}`, detail: r.text, plantingId: r.p.id })) : gc.check.items;
+  L += `<div class="card gcheck"><h2>🧑‍🌾 Today · ${esc(scopeName)}</h2>
+    ${bed ? '' : `<p class="gc-summary" style="font-size:13px">${esc(gc.check.summary)}</p>`}
+    ${items.length ? `<ol class="gc-list">${items.slice(0, 4).map(i => `<li class="gc-item ${sevClass(i.sev)}" ${i.plantingId || i.shotId ? `data-act="${i.shotId ? 'shot-open' : 'open-planting'}" data-id="${i.shotId || i.plantingId}" style="cursor:pointer"` : ''}><b>${esc(i.title)}</b><span>${esc(i.detail)}</span></li>`).join('')}</ol>` : `<p class="hint">Nothing to report.</p>`}
+    ${!bed && gc.check.items.length > 4 ? `<button class="btn small ghost block" style="margin-top:8px" data-act="go-gardener">Full garden check →</button>` : ''}
+  </div>`;
+  const wx = S.wx, ws = waterStatus();
+  if (wx) {
+    const cur = wx.current || {}, d = WX.describe(cur.weather_code ?? 0);
+    const days = [0, 1, 2].map(i => { const k = isoDate(addDays(now, i)); const r = wx.days.get(k); return r ? { ...r, key: k, i } : null; }).filter(Boolean);
+    L += `<div class="card"><h2>Weather · ${esc(S.settings.place || '')}</h2>
+      <div class="wx-mini"><div class="ic">${d.icon}</div><div><div class="big">${cur.temperature_2m != null ? Math.round(cur.temperature_2m) + '°' : '—'}</div><div class="hint">${d.text}${cur.relative_humidity_2m != null ? ` · ${cur.relative_humidity_2m}% RH` : ''}</div></div></div>
+      ${ws ? `<div class="flag ${sevClass(ws.sev)}" style="margin-top:8px;font-size:12px"><span class="fi">💧</span><div>${esc(ws.text)}</div></div>` : ''}
+      <div class="wx-3">${days.map(x => { const dd = WX.describe(x.code ?? 0); return `<div class="wx-day ${x.i === 0 ? 'today' : ''} ${x.tmax >= 90 ? 'hot' : ''} ${x.tmin <= 36 ? 'cold' : ''}"><div class="dn">${x.i === 0 ? 'Today' : parseISO(x.key).toLocaleDateString(undefined, { weekday: 'short' })}</div><div class="ic">${dd.icon}</div><div class="hi">${Math.round(x.tmax)}°</div><div class="lo">${Math.round(x.tmin)}°</div></div>`; }).join('')}</div>
+    </div>`;
+  } else {
+    L += `<div class="card"><h2>Weather</h2><p class="hint">${S.wxErr ? 'Unavailable right now.' : 'Loading…'}</p></div>`;
+  }
+  const dtf = daysToFirstFrost();
+  const go = gc.windows.filter(w => w.fit === 'go').slice(0, 5);
+  L += `<div class="card"><h2>Season</h2>
+    <dl class="kv"><dt>First frost</dt><dd>${dtf != null ? `${plural(dtf, 'day')} · ${fmtDate(nextFrost(S.settings.firstFrost))}` : 'set in Settings'}</dd><dt>Growing</dt><dd>${plural(S.plantings.filter(p => p.status === 'active' && scope(p)).length, 'planting')} in ${scopeName === 'the garden' ? plural(S.beds.length, 'bed') : 'this bed'}</dd></dl>
+    ${go.length ? `<p class="hint" style="margin:8px 0 4px">Still fits the season</p><div class="row wrap" style="gap:4px">${go.map(w => `<span class="chip" title="${esc(w.note)}">${w.crop.emoji} ${esc(w.crop.name)}</span>`).join('')}</div>` : ''}
+  </div>`;
+
+  /* RIGHT: harvest countdown, recent activity, legend */
+  let R = '';
+  const act = S.plantings.filter(p => p.status === 'active' && scope(p)).map(p => ({ p, st: statsFor(p, now) })).filter(x => !x.st.perennial).sort((a, b) => a.st.left - b.st.left).slice(0, 6);
+  R += `<div class="card"><h2>Harvest countdown</h2>${act.length ? act.map(({ p, st }) => `<button class="rail-row" data-act="open-planting" data-id="${p.id}"><span class="em">${st.crop.emoji}</span><span><span class="nm">${esc(p.variety || st.crop.name)}</span><br><span class="sb">${bed ? esc(st.stage) : esc(bedById(p.bedId)?.name || '')}</span></span><span class="dl"><b>${st.left > 0 ? `${st.left} d` : st.progress < 1.3 ? 'Ready' : 'Over'}</b><br>${fmtDate(st.eta)}</span></button>`).join('') : `<p class="hint">Nothing with a harvest date yet.</p>`}</div>`;
+  const events = [];
+  for (const ph of S.photos.filter(x => scope(x))) events.push({ at: ph.takenAt, kind: 'photo', id: ph.id, bedId: ph.bedId, text: `Bed photo · ${esc(bedById(ph.bedId)?.name || '')}` });
+  for (const s of S.shots.filter(x => scope(x))) { const p = s.plantingId ? plantingById(s.plantingId) : null; const c = p ? cropByKey(p.cropKey) : null; events.push({ at: s.takenAt, kind: 'shot', id: s.id, text: `Close-up${c ? ` · ${esc(p.variety || c.name)}` : ''}${(s.symptoms || []).length ? ` · ${s.symptoms.length} tagged` : ''}`, sev: (shotFindings(s)[0] || {}).sev }); }
+  for (const l of S.logs.filter(x => scope(x))) { const p = plantingById(l.plantingId); if (!p) continue; const c = cropByKey(p.cropKey); events.push({ at: l.at, kind: 'log', id: p.id, text: `${HEALTH[l.health] || '📝'} ${l.health}/5 · ${esc(p.variety || c.name)}${l.note ? ` — ${esc(l.note.slice(0, 40))}${l.note.length > 40 ? '…' : ''}` : ''}` }); }
+  events.sort((a, b) => b.at.localeCompare(a.at));
+  const recent = events.slice(0, 7);
+  let rows = '';
+  for (const e of recent) {
+    const ago = daysBetween(new Date(e.at), now);
+    const when = ago === 0 ? 'today' : ago === 1 ? 'yesterday' : `${ago} d ago`;
+    const thumb = e.kind === 'photo' || e.kind === 'shot' ? `<img class="th" src="${await urlFor(e.id, 'thumb')}" alt="">` : `<span class="em">📝</span>`;
+    const act2 = e.kind === 'photo' ? `data-act="open-bed" data-id="${e.bedId}"` : e.kind === 'shot' ? `data-act="shot-open" data-id="${e.id}"` : `data-act="open-planting" data-id="${e.id}"`;
+    rows += `<button class="rail-row" ${act2}>${thumb}<span class="nm">${e.text}</span><span class="dl">${when}</span></button>`;
+  }
+  R += `<div class="card"><h2>Recent</h2>${rows || `<p class="hint">Photos, close-ups and check-ins show up here.</p>`}</div>`;
+  const groups = [...new Set(S.plantings.filter(p => p.status === 'active').map(p => cropByKey(p.cropKey).group))];
+  if (groups.length) R += `<div class="card"><h2>Colours</h2><div class="row wrap" style="gap:4px">${groups.map(g => `<span class="chip" style="--c:${CROP_GROUPS[g].color}"><span class="dot"></span>${esc(CROP_GROUPS[g].name)}</span>`).join('')}</div></div>`;
+
+  if (token !== S.renderToken) return;
+  left.innerHTML = L; right.innerHTML = R;
 }
 function renderTopbar() {
   const back = $('#back-btn'), title = $('#title'), sub = $('#subtitle'), acts = $('#topbar-actions');
@@ -573,7 +638,7 @@ async function renderBeds() {
   let html = `<div class="stat-grid">
     <div class="stat"><div class="stat-label">Active</div><div class="stat-value">${t.act}</div><div class="stat-sub">${plural(S.beds.length, 'bed')}</div></div>
     <div class="stat ${t.ready ? 'good' : ''}"><div class="stat-label">Ready now</div><div class="stat-value">${t.ready}</div><div class="stat-sub">${t.due7 ? `+${t.due7} within 7 d` : 'harvest window'}</div></div>
-    <div class="stat ${t.attention ? 'alert' : ''}"><div class="stat-label">Attention</div><div class="stat-value">${t.attention}</div><div class="stat-sub">${t.attention ? 'see Analytics' : 'all clear'}</div></div>
+    <div class="stat ${t.attention ? 'alert' : ''}"><div class="stat-label">Attention</div><div class="stat-value">${t.attention}</div><div class="stat-sub">${t.attention ? 'see Gardener' : 'all clear'}</div></div>
   </div>`;
   for (const bed of S.beds) {
     const lp = latestPhoto(bed.id);
@@ -789,20 +854,21 @@ function dropzone(bedId, plantingId, label) {
   </button>`;
 }
 
-/* The Master Gardener's take on just this bed. */
-function bedCheckCard(bed) {
+/* The Master Gardener's take on just this bed: one row per planting, most pressing first. */
+function bedCheckRows(bed) {
   const now = new Date();
-  const act = plantingsOf(bed.id).filter(p => p.status === 'active');
-  if (!act.length) return '';
-  const rows = act.map(p => {
+  return plantingsOf(bed.id).filter(p => p.status === 'active').map(p => {
     const st = statsFor(p, now), read = readFor(p, now);
     const flags = [...st.attention, ...weatherFlagsFor(p, st)].filter(f => f.kind !== 'stale-log').sort((a, b) => sevRank[b.sev] - sevRank[a.sev]);
     const sev = flags[0] ? flags[0].sev : read.sev;
     const text = flags[0] ? flags[0].text : (st.left != null && st.left <= 0 && st.progress < 1.3 ? 'Ready to pick. Keeping up with it is what keeps it producing.' : read.tasks[0] || read.headline);
     return { p, st, crop: st.crop, sev, text, pri: sevRank[sev] };
   }).sort((a, b) => b.pri - a.pri || (a.st.left ?? 9e9) - (b.st.left ?? 9e9));
-  const top = rows.slice(0, 3);
-  const worst = top[0].sev;
+}
+function bedCheckCard(bed) {
+  const act = plantingsOf(bed.id).filter(p => p.status === 'active');
+  if (!act.length) return '';
+  const top = bedCheckRows(bed).slice(0, 3);
   return `<div class="card gcheck bedcheck"><div class="section" style="margin:0 0 8px"><h2>🧑‍🌾 Bed check</h2><span class="hint">${plural(act.length, 'planting')}</span></div>
     <ol class="gc-list">${top.map(r => `<li class="gc-item ${sevClass(r.sev)}" data-act="open-planting" data-id="${r.p.id}" style="cursor:pointer"><b>${r.crop.emoji} ${esc(r.p.variety || r.crop.name)}</b><span>${esc(r.text)}</span></li>`).join('')}</ol>
     ${act.length > 3 ? `<p class="hint" style="margin-top:8px">${act.length - 3} more below.</p>` : ''}</div>`;
@@ -1358,6 +1424,7 @@ const ACT = {
   'close-sheet': () => closeSheet(),
   'open-bed': el => go(`#/bed/${el.dataset.id}`),
   'bed-step': el => stepBed(+el.dataset.d),
+  'go-gardener': () => go('#/analytics'),
   'tl-play': () => { if (S.playing) { stopPlay(); } else { const span = bedSpan(bedById(S.bedId)); if (!span) return; S.playing = true; S.scrub = +span.start; } render(); },
   'tl-now': () => { stopPlay(); S.scrub = null; render(); },
   'add-bed': () => bedForm(null),
@@ -1768,7 +1835,7 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'ArrowRight') { ev.preventDefault(); stepBed(1); }
 });
 $$('.tab').forEach(t => t.addEventListener('click', () => go(t.dataset.tab === 'beds' ? '#/beds' : `#/${t.dataset.tab}`)));
-window.addEventListener('resize', () => { if (S.view === 'garden') render(); });
+window.addEventListener('resize', () => { if (S.view === 'garden') render(); else renderRails(S.renderToken); });
 $('#back-btn').addEventListener('click', () => go('#/beds'));
 $('#file-camera').addEventListener('change', e => { importFiles(e.target.files, S.bedId); e.target.value = ''; });
 $('#file-library').addEventListener('change', e => { importFiles(e.target.files, S.bedId); e.target.value = ''; });

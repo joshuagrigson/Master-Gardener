@@ -75,7 +75,36 @@ label.field > span { display: block; font-size: 12px; color: var(--ink2); margin
 .brand .logo { width: 30px; height: 30px; flex: none; filter: drop-shadow(0 0 8px rgba(21, 128, 61, 0.32)); }
 .brand h1 { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand .sub { font-size: 11px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-main#view { flex: 1; padding: 14px 14px calc(var(--tab-h) + var(--sab) + 24px); max-width: 760px; width: 100%; margin: 0 auto; }
+.shell { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+main#view { padding: 14px 14px calc(var(--tab-h) + var(--sab) + 24px); max-width: 760px; width: 100%; margin: 0 auto; min-width: 0; }
+.rail { display: none; }
+@media (min-width: 1120px) {
+  .shell { grid-template-columns: 300px minmax(0, 760px) 300px; justify-content: center; gap: 22px; padding: 0 22px; }
+  main#view { margin: 0; }
+  .rail { display: block; position: sticky; top: 74px; align-self: start; max-height: calc(100vh - 74px - var(--tab-h)); overflow: auto; padding: 14px 0 20px; scrollbar-width: thin; }
+}
+@media (min-width: 1440px) { .shell { grid-template-columns: 340px minmax(0, 760px) 340px; } }
+.rail .card { padding: 12px; margin-bottom: 10px; }
+.rail h2 { font-size: 12px; margin-bottom: 8px; }
+.rail .gc-list { gap: 5px; }
+.rail .gc-item { padding: 7px 9px; }
+.rail .gc-item b { font-size: 13px; }
+.rail .gc-item span { font-size: 12px; }
+.rail-row { display: grid; grid-template-columns: 28px 1fr auto; gap: 8px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); cursor: pointer; text-align: left; width: 100%; background: none; border-left: 0; border-right: 0; border-bottom: 0; color: var(--ink); }
+.rail-row:first-of-type { border-top: 0; }
+.rail-row .em { font-size: 20px; text-align: center; }
+.rail-row .nm { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail-row .sb { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail-row .dl { font-size: 12px; color: var(--ink2); text-align: right; white-space: nowrap; }
+.rail-row .dl b { color: var(--ink); }
+.rail-row .th { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; background: var(--surface3); }
+.rail .wx-mini { display: flex; align-items: center; gap: 10px; }
+.rail .wx-mini .big { font-size: 28px; font-weight: 700; line-height: 1; }
+.rail .wx-mini .ic { font-size: 28px; }
+.rail .wx-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; }
+.rail .wx-3 .wx-day { padding: 5px 2px; }
+.rail .kv { font-size: 12px; }
+.rail .chip { font-size: 11px; padding: 2px 7px; }
 main#view.drag-over { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
