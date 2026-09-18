@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.9.1';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -609,8 +609,9 @@ async function renderBeds() {
 }
 
 function currentPhoto(bed) {
-  if (S.scrub != null) { // timeline: the most recent photo taken at or before the scrub date
-    const ps = photosOf(bed.id).filter(p => new Date(p.takenAt) <= new Date(S.scrub));
+  if (S.scrub != null) { // timeline: the newest photo taken on or before the scrub DAY (compare by day, not by clock time)
+    const day = startOfDay(new Date(S.scrub));
+    const ps = photosOf(bed.id).filter(p => startOfDay(new Date(p.takenAt)) <= day);
     return ps.length ? ps[ps.length - 1] : null;
   }
   if (S.photoId === 'map') return null;
@@ -624,9 +625,10 @@ function asOfFor(bed, photo) {
   if (latest && latest.id === photo.id) return new Date();
   return new Date(photo.takenAt);
 }
-/* The window the timeline covers: from the first thing that happened in this bed to today. */
+/* The window the timeline covers: from the FIRST PHOTO of this bed to today.
+   The slider only shows what a photo can actually back up, so no photos means no timeline. */
 function bedSpan(bed) {
-  const dates = [...plantingsOf(bed.id).map(p => parseISO(p.plantedAt)), ...photosOf(bed.id).map(p => new Date(p.takenAt))].filter(d => d && !isNaN(d));
+  const dates = photosOf(bed.id).map(p => new Date(p.takenAt)).filter(d => d && !isNaN(d));
   if (!dates.length) return null;
   const start = startOfDay(new Date(Math.min(...dates.map(d => +d))));
   const end = startOfDay(new Date());
@@ -668,7 +670,7 @@ async function renderBed() {
         ${live ? '' : `<button class="btn small" data-act="tl-now">Now</button>`}</div>
       <div class="tl-track"><div class="tl-marks">${marks}</div>
         <input type="range" id="tl-range" min="0" max="${span.days}" step="1" value="${day}" aria-label="Slide through the season"></div>
-      <div class="tl-ends"><span>${fmtDate(span.start)} · first went in</span><span>today</span></div>
+      <div class="tl-ends"><span>${fmtDate(span.start)} · first photo</span><span>today</span></div>
     </div>`;
   })();
 
