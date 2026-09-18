@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -126,12 +126,25 @@ function cellPoly(H, rows, cols, r, c) {
 }
 /* Re-assign the bed's compass corners onto the quad's geometric corners for the direction the camera was facing.
    Looking N: far-left of the photo is the NW corner. Looking S: far-left is SE. Looking E: far-left is NE. Looking W: far-left is SW. */
-const FACINGS = { N: ['TL', 'TR', 'BR', 'BL'], S: ['BR', 'BL', 'TL', 'TR'], E: ['BL', 'TL', 'TR', 'BR'], W: ['TR', 'BR', 'BL', 'TL'] };
-function facingQuad(quad, facing) {
+const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const norm360 = d => ((d % 360) + 360) % 360;
+const dirName = deg => DIRS[Math.round(norm360(deg) / 45) % 8];
+const dirDeg = name => Math.max(0, DIRS.indexOf(name)) * 45;
+/* A bed's plan has a top edge (row 0), right edge (last column), bottom and left. `heading` is the compass
+   direction the top edge faces (0 = north, 90 = east). Edge and corner labels follow it. */
+const bedHeading = bed => norm360(+bed.heading || 0);
+const edgeNames = bed => { const h = bedHeading(bed); return { top: dirName(h), right: dirName(h + 90), bottom: dirName(h + 180), left: dirName(h + 270) }; };
+const cornerNames = bed => { const h = bedHeading(bed); return [dirName(h + 315), dirName(h + 45), dirName(h + 135), dirName(h + 225)]; }; // TL, TR, BR, BL of the plan
+const isMasked = (bed, idx) => Array.isArray(bed.mask) && bed.mask.includes(idx);
+const bedCellCount = bed => bed.rows * bed.cols - (bed.mask ? bed.mask.filter(i => i < bed.rows * bed.cols).length : 0);
+/* Camera-facing relative to the bed: looking along the top edge's direction means the plan's top-left corner is the far-left of the photo. */
+const REL = { 0: ['TL', 'TR', 'BR', 'BL'], 180: ['BR', 'BL', 'TL', 'TR'], 90: ['BL', 'TL', 'TR', 'BR'], 270: ['TR', 'BR', 'BL', 'TL'] };
+function facingQuad(quad, facing, bed) {
   const sorted = [...quad].sort((a, b) => a[1] - b[1]);
   const top = sorted.slice(0, 2).sort((a, b) => a[0] - b[0]), bot = sorted.slice(2).sort((a, b) => a[0] - b[0]);
   const g = { TL: top[0], TR: top[1], BL: bot[0], BR: bot[1] };
-  return (FACINGS[facing] || FACINGS.N).map(k => [...g[k]]);
+  const rel = Math.round(norm360(dirDeg(facing) - bedHeading(bed)) / 90) * 90 % 360;
+  return (REL[rel] || REL[0]).map(k => [...g[k]]);
 }
 const centroid = poly => [poly.reduce((s, p) => s + p[0], 0) / poly.length, poly.reduce((s, p) => s + p[1], 0) / poly.length];
 const pts = poly => poly.map(([x, y]) => `${(x * 1000).toFixed(1)},${(y * 1000).toFixed(1)}`).join(' ');
@@ -147,9 +160,9 @@ async function loadAll() {
 async function seedBeds() {
   const now = new Date().toISOString();
   const beds = [
-    { id: uid(), name: 'Bed 1 · South', subtitle: 'Front bed: berries + cool season', rows: 2, cols: 4, sort: 1, createdAt: now },
-    { id: uid(), name: 'Bed 2 · Middle', subtitle: 'Roots, bulbs, squash corner', rows: 2, cols: 4, sort: 2, createdAt: now },
-    { id: uid(), name: 'Bed 3 · North', subtitle: 'Back bed by the fence: nightshades', rows: 2, cols: 4, sort: 3, createdAt: now },
+    { id: uid(), name: 'Bed 1 · South', subtitle: 'Front bed: berries + cool season', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: 1, createdAt: now },
+    { id: uid(), name: 'Bed 2 · Middle', subtitle: 'Roots, bulbs, squash corner', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: 2, createdAt: now },
+    { id: uid(), name: 'Bed 3 · North', subtitle: 'Back bed by the fence: nightshades', rows: 2, cols: 4, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: 3, createdAt: now },
   ];
   await DB.putMany('beds', beds); S.beds = beds;
 }
@@ -337,14 +350,15 @@ async function renderBeds() {
     let mini = '';
     if (!thumb) {
       mini = `<div class="mini" style="grid-template-columns:repeat(${bed.cols},1fr);grid-template-rows:repeat(${bed.rows},1fr)">` +
-        Array.from({ length: bed.rows * bed.cols }, (_, i) => { const o = owners.get(i); return `<i class="${o ? 'on' : ''}" style="${o ? `--c:${CROP_GROUPS[cropByKey(o.cropKey).group].color}` : ''}"></i>`; }).join('') + '</div>';
+        Array.from({ length: bed.rows * bed.cols }, (_, i) => { const o = owners.get(i); return `<i class="${o ? 'on' : ''}" style="${isMasked(bed, i) ? 'visibility:hidden' : o ? `--c:${CROP_GROUPS[cropByKey(o.cropKey).group].color}` : ''}"></i>`; }).join('') + '</div>';
     }
+    const dims = bed.lengthFt && bed.widthFt ? `${bed.lengthFt}×${bed.widthFt} ft · ` : '';
     const chips = act.slice(0, 6).map(p => { const c = cropByKey(p.cropKey); const st = statsFor(p); return `<span class="chip" style="--c:${st.color}"><span class="dot"></span>${c.emoji} ${esc(p.variety || c.name)} <span class="mono">d${st.days}</span></span>`; }).join('') + (act.length > 6 ? `<span class="chip">+${act.length - 6}</span>` : '');
     const next = act.map(p => statsFor(p)).filter(s => !s.perennial && s.left != null).sort((a, b) => a.left - b.left)[0];
     html += `<button class="bed-card" data-act="open-bed" data-id="${bed.id}">
       <div class="bed-thumb">${thumb ? `<img src="${thumb}" alt="">` : mini}</div>
       <div class="grow">
-        <h3>${esc(bed.name)}</h3><div class="sub">${esc(bed.subtitle || '')}${bed.subtitle ? ' · ' : ''}${bed.rows}×${bed.cols}${lp ? ` · photo ${fmtDate(new Date(lp.takenAt))}` : ' · no photos yet'}</div>
+        <h3>${esc(bed.name)}</h3><div class="sub">${esc(bed.subtitle || '')}${bed.subtitle ? ' · ' : ''}${dims}${bed.rows}×${bed.cols} · top ${edgeNames(bed).top}${lp ? ` · photo ${fmtDate(new Date(lp.takenAt))}` : ' · no photos yet'}</div>
         <div class="chips">${chips || '<span class="hint">Nothing tagged yet</span>'}</div>
         ${next ? `<div class="meta">Next harvest: ${next.crop.emoji} ${esc(next.crop.name)} ${next.left <= 0 ? '<b>now</b>' : `<b>${relDays(next.left)}</b>`}</div>` : ''}
       </div></button>`;
@@ -391,8 +405,10 @@ async function renderBed() {
   let toolbar = '';
   if (S.mode === 'align') {
     const facing = S.alignFacing || photo.facing || 'N';
-    toolbar = `<div class="align-help">1. Tap the direction you were facing when you took the photo. 2. Drag the four corners onto the bed's real corners (the labels say which compass corner each one is). Grid: ${bed.rows} rows N→S × ${bed.cols} columns W→E.</div>
-      <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Camera looking</span><div class="seg grow">${['N', 'E', 'S', 'W'].map(f => `<button type="button" class="${facing === f ? 'on' : ''}" data-act="set-facing" data-f="${f}">${f}</button>`).join('')}</div><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90°">↻ Rotate</button></div>
+    const en = edgeNames(bed);
+    toolbar = `<div class="align-help">1. Tap the direction you were facing when you took the photo. 2. Drag the four corners onto the bed's real corners (each handle names its compass corner). This bed's top edge faces ${en.top}: ${bed.rows} rows ${en.top}→${en.bottom} × ${bed.cols} columns ${en.left}→${en.right}.</div>
+      <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Camera looking</span><div class="seg grow seg-8">${DIRS.map(f => `<button type="button" class="${facing === f ? 'on' : ''}" data-act="set-facing" data-f="${f}">${f}</button>`).join('')}</div></div>
+      <div class="row" style="margin-bottom:8px"><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90°">↻ Rotate photo</button><button class="btn small" data-act="edit-bed" data-id="${bed.id}">⟲ Bed shape & heading</button></div>
       <div class="btn-row"><button class="btn primary" data-act="align-save">Save alignment</button><button class="btn" data-act="align-reset">Reset corners</button><button class="btn ghost" data-act="align-cancel">Cancel</button></div>`;
   } else if (S.mode === 'compare') {
     toolbar = `<div class="align-help">Tap another photo in the strip to compare against. Slide to reveal.</div>
@@ -428,7 +444,8 @@ async function renderStage(bed, photo, asOf, historical) {
   const small = (Math.min(window.innerWidth, 760) / cols) < 105;
   let polys = '';
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const idx = r * cols + c; const o = owners.get(idx); const poly = cellPoly(H, rows, cols, r, c);
+    const idx = r * cols + c; if (isMasked(bed, idx)) continue;
+    const o = owners.get(idx); const poly = cellPoly(H, rows, cols, r, c);
     const color = o ? CROP_GROUPS[cropByKey(o.cropKey).group].color : null;
     polys += `<polygon class="cell ${o ? 'on' : ''} ${S.selCell === idx ? 'sel' : ''}" points="${pts(poly)}" ${o ? `style="fill:${hexRgba(color, 0.26)};stroke:${color}"` : ''} data-act="cell" data-idx="${idx}"></polygon>`;
   }
@@ -444,10 +461,11 @@ async function renderStage(bed, photo, asOf, historical) {
     const dayTxt = st.perennial ? `y${Math.floor(st.days / 365) + 1}` : `d${st.days}`;
     labels += `<div class="tag ${small ? 'small' : ''}" style="left:${(cx * 100).toFixed(2)}%;top:${(cy * 100).toFixed(2)}%;--c:${st.color};--c-soft:${hexRgba(st.color, 0.5)};--p:${pct}" data-act="open-planting" data-id="${p.id}" title="${esc(p.variety || st.crop.name)} · ${esc(st.stage)}"><span class="ring"></span><span>${st.crop.emoji}</span><span class="name">${esc(p.variety || st.crop.name)}</span><span class="d">${dayTxt}${st.left != null && st.left <= 0 && !st.perennial ? ' ✓' : ''}</span></div>`;
   }
-  const mids = [['N', H(0.5, 0)], ['S', H(0.5, 1)], ['W', H(0, 0.5)], ['E', H(1, 0.5)]];
+  const en = edgeNames(bed);
+  const mids = [[en.top, H(0.5, 0)], [en.bottom, H(0.5, 1)], [en.left, H(0, 0.5)], [en.right, H(1, 0.5)]];
   const compass = mids.map(([t, [x, y]]) => `<div class="compass-lbl" style="left:${(x * 100).toFixed(2)}%;top:${(y * 100).toFixed(2)}%">${t}</div>`).join('');
   let handles = '';
-  if (S.mode === 'align') handles = ['NW', 'NE', 'SE', 'SW'].map((n, i) => `<div class="handle-dot" data-corner="${i}" style="left:${(quad[i][0] * 100).toFixed(2)}%;top:${(quad[i][1] * 100).toFixed(2)}%">${n}</div>`).join('');
+  if (S.mode === 'align') handles = cornerNames(bed).map((n, i) => `<div class="handle-dot" data-corner="${i}" style="left:${(quad[i][0] * 100).toFixed(2)}%;top:${(quad[i][1] * 100).toFixed(2)}%">${n}</div>`).join('');
   const style = `aspect-ratio:${w}/${h};width:min(100%, calc(62vh * ${(w / h).toFixed(4)}))`;
   const empty = !photo ? `<div class="stage-empty"><strong>Plan view</strong><span>No photo selected. Take one and the grid will overlay it.</span></div>` : '';
   return `<div class="stage-wrap"><div class="stage ${photo ? '' : 'map-mode'} ${S.mode === 'align' ? 'aligning' : ''}" id="stage" style="${style}">
@@ -614,7 +632,7 @@ function renderSettings() {
     <p class="hint">iPhone: open this site in Safari → Share → <b>Add to Home Screen</b>. Android: Chrome menu → <b>Install app</b>. It then opens full-screen and works offline in the garden (weather needs a signal).</p>
   </div>
   <div class="card"><h2>About</h2>
-    <p class="hint">Master Gardener v${APP_VERSION}. Grid orientation: row 1 is the north edge of the bed, column 1 is the west edge. Days-to-maturity defaults come from common seed-packet figures for each variety; edit them per planting. Growing degree days use base ${''}50°F for warm crops and 40°F for cool crops from Open-Meteo daily highs and lows.</p>
+    <p class="hint">Master Gardener v${APP_VERSION}. Each bed has a heading: the direction its plan's top edge faces (set it in the bed's settings, any angle). Edge and corner labels on the plan, the photo overlay, and the align handles all follow it. Days-to-maturity defaults come from common seed-packet figures for each variety; edit them per planting. Growing degree days use base ${''}50°F for warm crops and 40°F for cool crops from Open-Meteo daily highs and lows.</p>
   </div>`;
 }
 
@@ -648,7 +666,7 @@ function plantingForm(bedId, existing, presetCell) {
     <div class="row"><label class="field grow"><span>Planted on</span><input id="f-date" type="date" value="${esc(F.plantedAt)}"></label><label class="field grow"><span>Days to harvest</span><input id="f-dtm" type="number" min="0" max="400" value="${F.dtm}"></label></div>
     <p class="hint" id="dtm-hint" style="margin:-6px 0 12px"></p>
     <span class="hint" style="display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--ink2)">Where in ${esc(bed.name)} (tap cells)</span>
-    <div class="mini-wrap"><span></span><span class="compass">N</span><span></span><span class="compass">W</span><div class="mini-grid" id="mini-grid" style="grid-template-columns:repeat(${bed.cols},1fr)"></div><span class="compass">E</span><span></span><span class="compass">S</span><span></span></div>
+    ${miniWrap(bed, 'mini-grid')}
     <label class="field"><span>Notes</span><textarea id="f-notes" placeholder="Where the seed came from, spacing, anything to remember">${esc(F.notes || '')}</textarea></label>
     <div class="btn-row"><button class="btn primary" data-act="save-planting">Save</button>${existing ? `<button class="btn danger" data-act="delete-planting" data-id="${existing.id}">Delete</button>` : ''}</div>`);
   const search = $('#crop-search');
@@ -673,12 +691,17 @@ function renderVarieties() {
   if (!crop || !crop.varieties.length) { area.innerHTML = ''; return; }
   area.innerHTML = `<div class="variety-chips">` + crop.varieties.map(v => `<button type="button" class="chip ${F.variety === v.name ? 'on' : ''}" data-act="pick-variety" data-name="${esc(v.name)}">${esc(v.name)}${v.dtm ? ` <span class="mono">${v.dtm}d</span>` : ''}</button>`).join('') + `</div>`;
 }
+function miniWrap(bed, id) {
+  const en = edgeNames(bed);
+  return `<div class="mini-wrap"><span></span><span class="compass">${en.top}</span><span></span><span class="compass">${en.left}</span><div class="mini-grid" id="${id}" style="grid-template-columns:repeat(${bed.cols},1fr)"></div><span class="compass">${en.right}</span><span></span><span class="compass">${en.bottom}</span><span></span></div>`;
+}
 function renderMiniGrid() {
   const g = $('#mini-grid'); if (!g) return;
   const bed = bedById(F.bedId);
   const taken = new Map(); plantingsOf(bed.id).filter(p => p.status === 'active' && p.id !== F.id).forEach(p => p.cells.forEach(c => taken.set(c, p)));
   const crop = F.cropKey ? cropByKey(F.cropKey) : null;
   g.innerHTML = Array.from({ length: bed.rows * bed.cols }, (_, i) => {
+    if (isMasked(bed, i)) return `<button type="button" class="off" disabled aria-hidden="true"></button>`;
     const t = taken.get(i); const mine = F.cells.includes(i);
     const color = t ? CROP_GROUPS[cropByKey(t.cropKey).group].color : crop ? CROP_GROUPS[crop.group].color : null;
     return `<button type="button" class="${mine ? 'on mine' : t ? 'taken' : ''}" style="${color ? `--c:${color}` : ''}" data-act="toggle-cell" data-idx="${i}" title="${t ? esc(t.variety || cropByKey(t.cropKey).name) : `Cell ${i + 1}`}">${mine ? (crop ? crop.emoji : '✓') : t ? cropByKey(t.cropKey).emoji : ''}</button>`;
@@ -742,15 +765,52 @@ function photoSheet(id) {
     <p class="hint" style="margin-bottom:10px">${ph.w}×${ph.h} · older photos show tags as of their date, so back-dating a photo places it correctly on the timeline.</p>
     <div class="btn-row"><button class="btn primary" data-act="save-photo" data-id="${ph.id}">Save</button><button class="btn" data-act="rotate-photo-sheet" data-id="${ph.id}">↻ Rotate 90°</button><button class="btn danger" data-act="delete-photo" data-id="${ph.id}">Delete photo</button></div>`);
 }
+let BF = null; // bed form draft
 function bedForm(existing) {
-  const b = existing || { id: uid(), name: `Bed ${S.beds.length + 1}`, subtitle: '', rows: S.settings.rows, cols: S.settings.cols, sort: S.beds.length + 1, createdAt: new Date().toISOString() };
-  openSheet(`<h3>${existing ? 'Bed settings' : 'New bed'} ${xBtn}</h3>
-    <label class="field"><span>Name</span><input id="b-name" value="${esc(b.name)}"></label>
-    <label class="field"><span>Description</span><input id="b-sub" value="${esc(b.subtitle || '')}" placeholder="e.g. Back bed by the fence"></label>
-    <div class="row"><label class="field grow"><span>Rows (north → south)</span><input id="b-rows" type="number" min="1" max="8" value="${b.rows}"></label><label class="field grow"><span>Columns (west → east)</span><input id="b-cols" type="number" min="1" max="10" value="${b.cols}"></label></div>
-    <p class="hint" style="margin-bottom:10px">A 4×7 ft bed maps well to 2 rows × 4 columns (cells ≈ 2 ft × 1.75 ft). Changing the grid keeps plantings whose cells still exist.</p>
-    <div class="btn-row"><button class="btn primary" data-act="save-bed" data-id="${b.id}" data-new="${existing ? '' : '1'}">Save</button>${existing ? `<button class="btn danger" data-act="delete-bed" data-id="${b.id}">Delete bed</button>` : ''}</div>`);
-  $('#sheet-root')._bed = b;
+  const base = existing || { id: uid(), name: `Bed ${S.beds.length + 1}`, subtitle: '', rows: S.settings.rows, cols: S.settings.cols, lengthFt: 7, widthFt: 4, heading: 0, mask: [], sort: S.beds.length + 1, createdAt: new Date().toISOString() };
+  BF = { ...base, mask: [...(base.mask || [])], heading: bedHeading(base), lengthFt: base.lengthFt || 0, widthFt: base.widthFt || 0, isNew: !existing };
+  openSheet(`<h3>${existing ? 'Bed shape, size & heading' : 'New bed'} ${xBtn}</h3>
+    <label class="field"><span>Name</span><input id="b-name" value="${esc(BF.name)}"></label>
+    <label class="field"><span>Description</span><input id="b-sub" value="${esc(BF.subtitle || '')}" placeholder="e.g. Back bed by the fence"></label>
+    <div class="row"><label class="field grow"><span>Length (ft, along columns)</span><input id="b-len" type="number" min="1" max="100" step="0.5" value="${BF.lengthFt || ''}" placeholder="7"></label><label class="field grow"><span>Width (ft, along rows)</span><input id="b-wid" type="number" min="1" max="100" step="0.5" value="${BF.widthFt || ''}" placeholder="4"></label></div>
+    <div class="row" style="margin-bottom:12px"><span class="hint" style="white-space:nowrap">Cell size</span><div class="seg grow">${[1, 1.5, 2, 3].map(s => `<button type="button" data-act="bed-cell-size" data-s="${s}">${s} ft</button>`).join('')}</div></div>
+    <div class="row"><label class="field grow"><span>Rows</span><input id="b-rows" type="number" min="1" max="12" value="${BF.rows}"></label><label class="field grow"><span>Columns</span><input id="b-cols" type="number" min="1" max="16" value="${BF.cols}"></label></div>
+    <span class="hint" style="display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--ink2)">Heading: the plan's top edge faces <b id="b-heading-name">${dirName(BF.heading)}</b> (<span id="b-heading-deg">${BF.heading}</span>°)</span>
+    <div class="seg seg-8" style="margin-bottom:8px">${DIRS.map(d => `<button type="button" class="${dirName(BF.heading) === d && BF.heading % 45 === 0 ? 'on' : ''}" data-act="bed-heading" data-d="${dirDeg(d)}">${d}</button>`).join('')}</div>
+    <input type="range" id="b-heading" min="0" max="355" step="5" value="${BF.heading}" style="width:100%;margin:0 0 12px;accent-color:var(--accent)" aria-label="Heading in degrees">
+    <span class="hint" style="display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--ink2)">Shape: tap cells that are NOT part of the bed (for L, T, or U shapes)</span>
+    ${miniWrap(BF, 'bed-mask-grid')}
+    <p class="hint" style="margin-bottom:10px" id="b-summary"></p>
+    <div class="btn-row"><button class="btn primary" data-act="save-bed">Save</button>${existing ? `<button class="btn danger" data-act="delete-bed" data-id="${BF.id}">Delete bed</button>` : ''}</div>`);
+  const upd = () => { BF.name = $('#b-name').value; BF.subtitle = $('#b-sub').value; BF.lengthFt = +$('#b-len').value || 0; BF.widthFt = +$('#b-wid').value || 0; };
+  ['#b-name', '#b-sub', '#b-len', '#b-wid'].forEach(s => $(s).addEventListener('input', () => { upd(); renderBedSummary(); }));
+  const dims = () => { BF.rows = clamp(+$('#b-rows').value || 1, 1, 12); BF.cols = clamp(+$('#b-cols').value || 1, 1, 16); renderBedMask(); };
+  $('#b-rows').addEventListener('change', dims); $('#b-cols').addEventListener('change', dims);
+  $('#b-heading').addEventListener('input', e => setBedHeading(+e.target.value));
+  renderBedMask();
+}
+function setBedHeading(deg) {
+  BF.heading = norm360(Math.round(deg));
+  $('#b-heading').value = BF.heading; $('#b-heading-name').textContent = dirName(BF.heading); $('#b-heading-deg').textContent = BF.heading;
+  $$('[data-act="bed-heading"]').forEach(b => b.classList.toggle('on', +b.dataset.d === BF.heading));
+  const wrap = $('#bed-mask-grid').parentElement; wrap.outerHTML = miniWrap(BF, 'bed-mask-grid'); renderBedMask();
+}
+function renderBedMask() {
+  const g = $('#bed-mask-grid'); if (!g) return;
+  g.style.gridTemplateColumns = `repeat(${BF.cols},1fr)`;
+  const owners = new Map(); if (!BF.isNew) plantingsOf(BF.id).filter(p => p.status === 'active').forEach(p => p.cells.forEach(c => owners.set(c, p)));
+  g.innerHTML = Array.from({ length: BF.rows * BF.cols }, (_, i) => {
+    const off = BF.mask.includes(i); const o = owners.get(i);
+    return `<button type="button" class="${off ? 'off' : o ? 'mine' : ''}" style="${o && !off ? `--c:${CROP_GROUPS[cropByKey(o.cropKey).group].color}` : ''}" data-act="bed-mask-toggle" data-idx="${i}" title="${off ? 'Not part of the bed' : `Cell ${i + 1}`}">${off ? '✕' : o ? cropByKey(o.cropKey).emoji : ''}</button>`;
+  }).join('');
+  renderBedSummary();
+}
+function renderBedSummary() {
+  const el = $('#b-summary'); if (!el) return;
+  const cells = BF.rows * BF.cols - BF.mask.filter(i => i < BF.rows * BF.cols).length;
+  const cw = BF.lengthFt && BF.cols ? (BF.lengthFt / BF.cols).toFixed(2).replace(/\.?0+$/, '') : null, ch = BF.widthFt && BF.rows ? (BF.widthFt / BF.rows).toFixed(2).replace(/\.?0+$/, '') : null;
+  const lost = BF.isNew ? 0 : plantingsOf(BF.id).filter(p => p.status === 'active' && p.cells.some(c => c >= BF.rows * BF.cols || BF.mask.includes(c))).length;
+  el.textContent = `${cells} usable cell${cells === 1 ? '' : 's'}${cw && ch ? ` ≈ ${cw} × ${ch} ft each` : ''}. ${lost ? `${lost} active planting${lost === 1 ? '' : 's'} would lose cells that no longer exist.` : 'Existing plantings keep their cells.'}`;
 }
 
 /* ---------- actions ---------- */
@@ -759,14 +819,22 @@ const ACT = {
   'open-bed': el => go(`#/bed/${el.dataset.id}`),
   'add-bed': () => bedForm(null),
   'edit-bed': el => bedForm(bedById(el.dataset.id)),
-  'save-bed': async el => {
-    const b = $('#sheet-root')._bed; const name = $('#b-name').value.trim(); if (!name) { toast('Give the bed a name'); return; }
-    const rows = clamp(+$('#b-rows').value || 1, 1, 8), cols = clamp(+$('#b-cols').value || 1, 1, 10);
-    const nb = { ...b, name, subtitle: $('#b-sub').value.trim(), rows, cols };
-    if (!el.dataset.new && (rows !== b.rows || cols !== b.cols)) {
-      for (const p of plantingsOf(b.id)) { const keep = p.cells.filter(i => i < rows * cols); if (keep.length !== p.cells.length) await savePlanting({ ...p, cells: keep }); }
+  'bed-cell-size': el => {
+    const s = +el.dataset.s; if (!BF.lengthFt || !BF.widthFt) { toast('Enter length and width first'); return; }
+    BF.cols = clamp(Math.max(1, Math.round(BF.lengthFt / s)), 1, 16); BF.rows = clamp(Math.max(1, Math.round(BF.widthFt / s)), 1, 12);
+    $('#b-rows').value = BF.rows; $('#b-cols').value = BF.cols; $$('[data-act="bed-cell-size"]').forEach(b => b.classList.toggle('on', b === el)); renderBedMask();
+  },
+  'bed-heading': el => setBedHeading(+el.dataset.d),
+  'bed-mask-toggle': el => { const i = +el.dataset.idx; BF.mask = BF.mask.includes(i) ? BF.mask.filter(x => x !== i) : [...BF.mask, i].sort((a, b) => a - b); renderBedMask(); },
+  'save-bed': async () => {
+    const name = $('#b-name').value.trim(); if (!name) { toast('Give the bed a name'); return; }
+    const { isNew, ...rest } = BF;
+    const nb = { ...rest, name, subtitle: $('#b-sub').value.trim(), mask: BF.mask.filter(i => i < BF.rows * BF.cols) };
+    if (nb.mask.length >= nb.rows * nb.cols) { toast('At least one cell has to be part of the bed'); return; }
+    if (!isNew) {
+      for (const p of plantingsOf(nb.id)) { const keep = p.cells.filter(i => i < nb.rows * nb.cols && !nb.mask.includes(i)); if (keep.length !== p.cells.length) await savePlanting({ ...p, cells: keep }); }
     }
-    await saveBed(nb); closeSheet(); toast('Bed saved'); render();
+    await saveBed(nb); closeSheet(); toast('Bed saved'); if (S.mode === 'align') S.alignDraft = facingQuad(S.alignDraft || defaultQuad(false), S.alignFacing || 'N', nb); render();
   },
   'delete-bed': async el => {
     const b = bedById(el.dataset.id); const n = plantingsOf(b.id).length + photosOf(b.id).length;
@@ -785,9 +853,9 @@ const ACT = {
     S.photoId = id; S.selCell = null; S.mode = 'view'; S.alignDraft = null; render();
   },
   'align-start': () => { const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph) return; S.mode = 'align'; S.alignDraft = ph.quad.map(p => [...p]); S.alignFacing = ph.facing || 'N'; render(); },
-  'align-reset': () => { S.alignDraft = facingQuad(defaultQuad(false), S.alignFacing || 'N'); render(); },
+  'align-reset': () => { S.alignDraft = facingQuad(defaultQuad(false), S.alignFacing || 'N', bedById(S.bedId)); render(); },
   'align-cancel': () => { S.mode = 'view'; S.alignDraft = null; S.alignFacing = null; render(); },
-  'set-facing': el => { S.alignFacing = el.dataset.f; S.alignDraft = facingQuad(S.alignDraft || defaultQuad(false), S.alignFacing); render(); },
+  'set-facing': el => { S.alignFacing = el.dataset.f; S.alignDraft = facingQuad(S.alignDraft || defaultQuad(false), S.alignFacing, bedById(S.bedId)); render(); },
   'rotate-photo': el => rotatePhoto(el.dataset.id),
   'align-save': async () => {
     const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph || !S.alignDraft) return;
@@ -834,6 +902,7 @@ const ACT = {
     updateDtmHint();
   },
   'toggle-cell': el => {
+    if (el.classList.contains('off')) return;
     if (el.classList.contains('taken')) { toast('That cell already has an active planting'); return; }
     const i = +el.dataset.idx; F.cells = F.cells.includes(i) ? F.cells.filter(x => x !== i) : [...F.cells, i].sort((a, b) => a - b); renderMiniGrid();
   },
@@ -972,7 +1041,7 @@ function redrawAlign(stage) {
   const bed = bedById(S.bedId); const q = S.alignDraft; const H = homography(q);
   const svg = $('svg.overlay', stage);
   let polys = `<polygon class="frame" points="${pts(q)}"></polygon>`;
-  for (let r = 0; r < bed.rows; r++) for (let c = 0; c < bed.cols; c++) polys += `<polygon class="cell" points="${pts(cellPoly(H, bed.rows, bed.cols, r, c))}"></polygon>`;
+  for (let r = 0; r < bed.rows; r++) for (let c = 0; c < bed.cols; c++) { if (isMasked(bed, r * bed.cols + c)) continue; polys += `<polygon class="cell" points="${pts(cellPoly(H, bed.rows, bed.cols, r, c))}"></polygon>`; }
   svg.innerHTML = polys;
   $$('.handle-dot', stage).forEach((h, i) => { h.style.left = `${(q[i][0] * 100).toFixed(2)}%`; h.style.top = `${(q[i][1] * 100).toFixed(2)}%`; });
   const mids = [H(0.5, 0), H(0.5, 1), H(0, 0.5), H(1, 0.5)];

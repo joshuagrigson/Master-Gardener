@@ -14,7 +14,7 @@ Vanilla HTML/CSS/JS, no build step. `index.html` + `styles.css` + `app.js` (UI a
 
 ## Grid convention
 
-Row 1 is the **north** edge of the bed, column 1 is the **west** edge. When aligning, drag the handle labelled NW onto the bed's north-west corner, and so on. Cell indexes are `row * cols + col`.
+Each bed has a **heading**: the compass direction its plan's top edge (row 1) faces, any angle. Edge and corner labels on the plan, the photo overlay, the align handles, and the "camera looking" picker all derive from it. Beds carry length/width in feet, a rows × columns grid (cell size picker), and a **mask** of cells that are not part of the bed, so L-, T-, or U-shaped beds work. Cell indexes are `row * cols + col`.
 
 ## Deploy
 
