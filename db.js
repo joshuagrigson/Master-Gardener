@@ -3,8 +3,8 @@
    plantings, logs (check-ins), settings (key/value). */
 window.DB = (() => {
   const NAME = 'master-gardener';
-  const VERSION = 1;
-  const STORES = ['beds', 'photos', 'blobs', 'plantings', 'logs', 'settings'];
+  const VERSION = 2;
+  const STORES = ['beds', 'photos', 'blobs', 'plantings', 'logs', 'settings', 'shots'];
   let opening = null;
 
   function open() {

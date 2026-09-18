@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -37,9 +37,9 @@ function toast(msg, ms = 2400) {
 const DEFAULT_SETTINGS = { place: 'Texarkana, TX', lat: 33.4418, lon: -94.0377, firstFrost: '11-10', lastFrost: '03-20', rows: 2, cols: 4 };
 const S = {
   view: 'beds', bedId: null, photoId: null, mode: 'view', compareId: null, selCell: null, alignDraft: null,
-  beds: [], photos: [], plantings: [], logs: [], settings: { ...DEFAULT_SETTINGS },
+  beds: [], photos: [], plantings: [], logs: [], shots: [], settings: { ...DEFAULT_SETTINGS },
   wx: null, wxErr: null, wxLoading: false, urls: new Map(), renderToken: 0,
-  gardenZoom: 1, gardenArrange: false,
+  gardenZoom: 1, gardenArrange: false, shotBed: null, shotPlanting: null,
 };
 const HEALTH = ['', '😟', '😕', '😐', '🙂', '🤩'];
 const FLAGS = [['watered', '💧 Watered'], ['fertilized', '🧪 Fertilized'], ['pests', '🐛 Pests'], ['disease', '🍂 Disease'], ['flowering', '🌸 Flowering'], ['fruit', '🍅 Fruit set'], ['harvested', '🧺 Harvested some'], ['pruned', '✂️ Pruned']];
@@ -51,6 +51,8 @@ const photosOf = bedId => S.photos.filter(p => p.bedId === bedId).sort((a, b) =>
 const latestPhoto = bedId => { const ps = photosOf(bedId); return ps.length ? ps[ps.length - 1] : null; };
 const plantingsOf = bedId => S.plantings.filter(p => p.bedId === bedId);
 const logsOf = pid => S.logs.filter(l => l.plantingId === pid).sort((a, b) => b.at.localeCompare(a.at));
+const shotsOf = bedId => S.shots.filter(s => s.bedId === bedId).sort((a, b) => b.takenAt.localeCompare(a.takenAt));
+const shotsOfPlanting = pid => S.shots.filter(s => s.plantingId === pid).sort((a, b) => b.takenAt.localeCompare(a.takenAt));
 const plantingById = id => S.plantings.find(p => p.id === id);
 function activeAt(p, asOf) {
   const planted = parseISO(p.plantedAt); if (!planted || planted > asOf) return false;
@@ -82,6 +84,8 @@ function statsFor(p, asOf = new Date()) {
   const sinceLog = last ? daysBetween(parseISO(last.at), asOf) : null;
   const attention = [];
   if (p.status === 'active') {
+    const recent = shotsOfPlanting(p.id).filter(s => daysBetween(new Date(s.takenAt), asOf) <= 14 && (s.symptoms || []).length)[0];
+    if (recent) { const f = shotFindings(recent, null)[0]; if (f && f.sev !== 'good') attention.push({ sev: f.sev, text: `${f.title} (close-up ${fmtDate(new Date(recent.takenAt))})`, shotId: recent.id }); }
     if (health != null && health <= 2) attention.push({ sev: 'critical', text: `Rated ${health}/5 at last check-in` });
     if (!perennial && progress >= 1.3) attention.push({ sev: 'serious', text: `Past its harvest window by ${days - dtm} d` });
     if (sinceLog != null && sinceLog >= 14) attention.push({ sev: 'warn', text: `No check-in for ${sinceLog} d` });
@@ -189,9 +193,9 @@ const pts = poly => poly.map(([x, y]) => `${(x * 1000).toFixed(1)},${(y * 1000).
 
 /* ---------- persistence ---------- */
 async function loadAll() {
-  const [beds, photos, plantings, logs, settings] = await Promise.all([DB.all('beds'), DB.all('photos'), DB.all('plantings'), DB.all('logs'), DB.setting('settings', null)]);
+  const [beds, photos, plantings, logs, shots, settings] = await Promise.all([DB.all('beds'), DB.all('photos'), DB.all('plantings'), DB.all('logs'), DB.all('shots'), DB.setting('settings', null)]);
   S.beds = beds.sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0) || a.createdAt.localeCompare(b.createdAt));
-  S.photos = photos; S.plantings = plantings; S.logs = logs;
+  S.photos = photos; S.plantings = plantings; S.logs = logs; S.shots = shots;
   S.settings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
   if (!S.beds.length) await seedBeds();
   await ensureBedPositions();
@@ -219,6 +223,12 @@ async function savePlanting(p) { await DB.put('plantings', p); const i = S.plant
 async function saveLog(l) { await DB.put('logs', l); const i = S.logs.findIndex(x => x.id === l.id); if (i >= 0) S.logs[i] = l; else S.logs.push(l); }
 async function saveBed(b) { await DB.put('beds', b); const i = S.beds.findIndex(x => x.id === b.id); if (i >= 0) S.beds[i] = b; else S.beds.push(b); }
 async function savePhoto(p) { await DB.put('photos', p); const i = S.photos.findIndex(x => x.id === p.id); if (i >= 0) S.photos[i] = p; else S.photos.push(p); }
+async function saveShot(s) { await DB.put('shots', s); const i = S.shots.findIndex(x => x.id === s.id); if (i >= 0) S.shots[i] = s; else S.shots.push(s); }
+async function deleteShot(id) {
+  await DB.del('shots', id); await DB.del('blobs', id);
+  S.shots = S.shots.filter(s => s.id !== id);
+  const u = S.urls.get(id); if (u) { URL.revokeObjectURL(u.full); URL.revokeObjectURL(u.thumb); S.urls.delete(id); }
+}
 async function deletePhoto(id) {
   await DB.del('photos', id); await DB.del('blobs', id);
   S.photos = S.photos.filter(p => p.id !== id);
@@ -267,13 +277,13 @@ function gddFor(p, st) {
 }
 
 /* ---------- photos ---------- */
-function processImage(file) {
+function processImage(file, max = 1600) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       try {
-        const full = drawScaled(img, 1600, 0.86), thumb = drawScaled(img, 360, 0.8);
+        const full = drawScaled(img, max, 0.86), thumb = drawScaled(img, 360, 0.8);
         Promise.all([full.blob, thumb.blob]).then(([fb, tb]) => { URL.revokeObjectURL(url); resolve({ full: fb, thumb: tb, w: full.w, h: full.h }); }, reject);
       } catch (e) { reject(e); }
     };
@@ -328,7 +338,7 @@ async function rotateBlobDeg(blob, deg, q) {
     const t = deg * Math.PI / 180, W = img.naturalWidth, H = img.naturalHeight;
     const W2 = Math.ceil(Math.abs(W * Math.cos(t)) + Math.abs(H * Math.sin(t))), H2 = Math.ceil(Math.abs(W * Math.sin(t)) + Math.abs(H * Math.cos(t)));
     const c = document.createElement('canvas'); c.width = W2; c.height = H2;
-    const g = c.getContext('2d'); g.fillStyle = '#0b1712'; g.fillRect(0, 0, W2, H2);
+    const g = c.getContext('2d'); g.fillStyle = '#EBE3D1'; g.fillRect(0, 0, W2, H2); // corners exposed by the turn
     g.translate(W2 / 2, H2 / 2); g.rotate(t); g.drawImage(img, -W / 2, -H / 2);
     const out = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', q));
     return { blob: out, W, H, W2, H2 };
@@ -358,6 +368,108 @@ async function rotatePhoto(id) {
   await savePhoto({ ...ph, w: ph.h, h: ph.w, quad });
   if (S.mode === 'align' && S.alignDraft) S.alignDraft = S.alignDraft.map(turn);
   render();
+}
+
+/* ---------- close-up shots ---------- */
+let SF = null; // shot draft while tagging
+async function importShots(files, bedId, plantingId) {
+  const list = Array.from(files || []).filter(f => f.type.startsWith('image/') || /\.(heic|heif|jpe?g|png|webp)$/i.test(f.name));
+  if (!list.length || !bedId) { if (!bedId) toast('Open a bed first'); return; }
+  toast(`Processing ${plural(list.length, 'close-up')}…`);
+  const made = [];
+  for (const f of list) {
+    try {
+      const { full, thumb, w, h } = await processImage(f, 2000); // close-ups keep more detail than bed photos
+      const id = uid();
+      const takenAt = new Date(f.lastModified && f.lastModified > 0 ? f.lastModified : Date.now());
+      const pl = plantingId ? plantingById(plantingId) : null;
+      const shot = { id, bedId, plantingId: plantingId || null, cropKey: pl ? pl.cropKey : null, takenAt: takenAt.toISOString(), w, h, part: 'whole', symptoms: [], note: '', createdAt: new Date().toISOString() };
+      await DB.put('blobs', { id, full, thumb });
+      await saveShot(shot); made.push(shot);
+    } catch (e) { console.error(e); toast(`Could not read ${f.name}`); }
+  }
+  render();
+  if (made.length) shotTagForm(made[0].id, made.length > 1 ? made.map(s => s.id) : null);
+}
+function shotTagForm(id, batch) {
+  const shot = S.shots.find(s => s.id === id); if (!shot) return;
+  SF = { ...shot, symptoms: [...(shot.symptoms || [])], batch: batch || null };
+  const bed = bedById(shot.bedId);
+  const act = plantingsOf(shot.bedId).filter(p => p.status === 'active');
+  const groups = [...new Set(SYMPTOMS.map(s => s.group))];
+  const groupName = { leaf: 'Leaves', whole: 'Whole plant', stem: 'Stem', fruit: 'Fruit', soil: 'Soil' };
+  openSheet(`<h3>Tag this close-up ${xBtn}</h3>
+    <img id="shot-preview" class="shot-preview" alt="">
+    <span class="hint fld">Which plant</span>
+    <div class="variety-chips">${act.map(p => { const c = cropByKey(p.cropKey); return `<button type="button" class="chip ${SF.plantingId === p.id ? 'on' : ''}" data-act="shot-plant" data-id="${p.id}">${c.emoji} ${esc(p.variety || c.name)}</button>`; }).join('')}<button type="button" class="chip ${SF.plantingId ? '' : 'on'}" data-act="shot-plant" data-id="">🛏️ Whole bed / not sure</button></div>
+    <span class="hint fld">What is in the frame</span>
+    <div class="variety-chips">${SHOT_PARTS.map(pt => `<button type="button" class="chip ${SF.part === pt.key ? 'on' : ''}" data-act="shot-part" data-p="${pt.key}" title="${esc(pt.how)}">${pt.emoji} ${esc(pt.label)}</button>`).join('')}</div>
+    <p class="hint" id="shot-part-how" style="margin:-6px 0 12px"></p>
+    <span class="hint fld">What do you see? Tag anything that applies</span>
+    ${groups.map(g => `<div class="variety-chips">${SYMPTOMS.filter(s => s.group === g).map(s => `<button type="button" class="chip ${SF.symptoms.includes(s.key) ? 'on' : ''}" data-act="shot-symptom" data-k="${s.key}">${s.emoji} ${esc(s.label)}</button>`).join('')}</div>`).join('')}
+    <label class="field"><span>Note</span><textarea id="shot-note" placeholder="Anything the photo does not show: smell, texture, how fast it spread">${esc(SF.note || '')}</textarea></label>
+    <div class="btn-row"><button class="btn primary" data-act="shot-save">Save${SF.batch ? ` (1 of ${SF.batch.length})` : ''}</button><button class="btn danger" data-act="shot-delete" data-id="${shot.id}">Delete</button></div>`);
+  urlFor(shot.id, 'full').then(u => { const el = $('#shot-preview'); if (el) el.src = u; });
+  $('#shot-note').addEventListener('input', e => { SF.note = e.target.value; });
+  updatePartHow();
+}
+function updatePartHow() { const el = $('#shot-part-how'); if (!el || !SF) return; const pt = SHOT_PARTS.find(p => p.key === SF.part); el.textContent = pt ? pt.how : ''; }
+
+function wxFlagsNow() {
+  const d = upcomingDays(3);
+  return { hot: d.some(x => x.tmax != null && x.tmax >= 90), cold: d.some(x => x.tmin != null && x.tmin <= 36), wet: d.reduce((s, x) => s + (x.rain || 0), 0) > 1, dry: d.length > 0 && d.reduce((s, x) => s + (x.rain || 0), 0) < 0.1 };
+}
+/* Pass st explicitly (null included) when calling from inside statsFor — computing it here would recurse. */
+function shotFindings(shot, st) {
+  if (!shot || !(shot.symptoms || []).length) return [];
+  const p = shot.plantingId ? plantingById(shot.plantingId) : null;
+  const crop = p ? cropByKey(p.cropKey) : (shot.cropKey ? cropByKey(shot.cropKey) : null);
+  const stage = st === undefined ? (p ? statsFor(p, new Date()) : null) : st;
+  return diagnose({ symptoms: shot.symptoms, crop, st: stage, wx: wxFlagsNow() });
+}
+async function shotSheet(id) {
+  const shot = S.shots.find(s => s.id === id); if (!shot) return;
+  const p = shot.plantingId ? plantingById(shot.plantingId) : null;
+  const crop = p ? cropByKey(p.cropKey) : null;
+  const st = p ? statsFor(p, new Date()) : null;
+  const findings = shotFindings(shot);
+  const part = SHOT_PARTS.find(x => x.key === shot.part);
+  const bed = bedById(shot.bedId);
+  const tags = (shot.symptoms || []).map(k => { const s = symptomByKey(k); return `<span class="badge">${s.emoji} ${esc(s.label)}</span>`; }).join(' ');
+  openSheet(`<h3>${part ? part.emoji : '📷'} ${p && crop ? `${crop.emoji} ${esc(p.variety || crop.name)}` : 'Close-up'} ${xBtn}</h3>
+    <img id="shot-preview" class="shot-preview" alt="">
+    <dl class="kv" style="margin-bottom:10px">
+      <dt>Taken</dt><dd>${fmtDateY(new Date(shot.takenAt))} · ${relDays(-daysBetween(new Date(shot.takenAt), new Date()))}</dd>
+      <dt>Where</dt><dd>${esc(bed ? bed.name : '')}${part ? ` · ${esc(part.label)}` : ''}${st ? ` · day ${st.days}, ${esc(st.stage.toLowerCase())}` : ''}</dd>
+      ${shot.note ? `<dt>Note</dt><dd>${esc(shot.note)}</dd>` : ''}
+    </dl>
+    ${tags ? `<div class="row wrap" style="margin-bottom:12px">${tags}</div>` : ''}
+    ${findings.length ? `<div class="section"><h2>Health read</h2></div><div class="flags">${findings.map(f => `<div class="flag ${sevClass(f.sev)}"><span class="fi">${f.sev === 'critical' ? '⛔' : f.sev === 'serious' ? '⚠️' : f.sev === 'warn' ? '△' : '✅'}</span><div><b>${esc(f.title)}</b><br><span class="hint">${esc(f.why)}</span><ul class="tips">${f.todo.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div></div>`).join('')}</div>
+      <p class="hint" style="margin-top:8px">Field heuristics from what you tagged, this crop's stage and your forecast. They tell you what to check, not what it definitely is.</p>`
+      : `<div class="empty" style="margin-bottom:12px"><strong>No symptoms tagged</strong>Tag what you see and a health read appears here.</div>`}
+    <div class="btn-row" style="margin-top:12px"><button class="btn" data-act="shot-edit" data-id="${shot.id}">Edit tags</button><button class="btn" data-act="shot-share" data-id="${shot.id}">↗ Share with context</button>${p ? `<button class="btn ghost" data-act="open-planting" data-id="${p.id}">Open planting</button>` : ''}</div>
+    <details style="margin-top:12px"><summary class="hint" style="cursor:pointer">How to shoot a diagnostic close-up</summary>
+      <ul class="tips">${SHOT_PARTS.map(x => `<li><b>${x.emoji} ${esc(x.label)}.</b> ${esc(x.how)}</li>`).join('')}${CAPTURE_TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>`);
+  urlFor(shot.id, 'full').then(u => { const el = $('#shot-preview'); if (el) el.src = u; });
+}
+function shotContext(shot) {
+  const p = shot.plantingId ? plantingById(shot.plantingId) : null;
+  const crop = p ? cropByKey(p.cropKey) : null;
+  const st = p ? statsFor(p, new Date()) : null;
+  const bed = bedById(shot.bedId);
+  const wx = S.wx ? upcomingDays(3) : [];
+  const lines = [
+    `Garden close-up — ${S.settings.place || 'my garden'}`,
+    `Plant: ${p && crop ? `${p.variety || crop.name} (${crop.name})` : 'not identified'}`,
+    st ? `Planted ${fmtDateY(st.planted)}, day ${st.days} of ${st.dtm || '?'}, stage: ${st.stage}` : null,
+    `Bed: ${bed ? bed.name : '?'} · photo of: ${(SHOT_PARTS.find(x => x.key === shot.part) || {}).label || 'plant'} · taken ${fmtDateY(new Date(shot.takenAt))}`,
+    (shot.symptoms || []).length ? `Symptoms tagged: ${shot.symptoms.map(k => symptomByKey(k).label).join(', ')}` : 'Symptoms tagged: none',
+    shot.note ? `Note: ${shot.note}` : null,
+    st && st.last ? `Last check-in: ${st.last.health}/5 on ${fmtDate(parseISO(st.last.at))}` : null,
+    wx.length ? `Next 3 days: highs ${wx.map(d => Math.round(d.tmax)).join('/')}°F, lows ${wx.map(d => Math.round(d.tmin)).join('/')}°F, rain ${wx.reduce((s, d) => s + (d.rain || 0), 0).toFixed(2)} in` : null,
+    '', 'What is going on and what should I do?',
+  ].filter(Boolean);
+  return lines.join('\n');
 }
 
 /* ---------- routing ---------- */
@@ -525,6 +637,7 @@ async function renderBed() {
   let list = `<div class="section"><h2>Plantings</h2><span class="hint">${plural(active.length, 'active')}</span></div>`;
   list += active.length ? active.map(p => plantingCard(p, new Date(), false)).join('') : `<div class="empty"><strong>Nothing tagged in this bed yet</strong>Tap a cell on the photo or plan, or use ＋ Plant.</div>`;
   if (done.length) list += `<div class="section"><h2>Finished</h2></div>` + done.map(p => plantingCard(p, new Date(), false)).join('');
+  list += await closeupSection(bed);
   return switcher + stage + toolbar + strip + list;
 }
 
@@ -590,6 +703,33 @@ async function renderCompare(bed, photo) {
       <span class="lbl a">${fmtDate(new Date(a.takenAt))}</span><span class="lbl b">${fmtDate(new Date(b.takenAt))} · +${delta} d</span>
     </div></div>
     <input type="range" class="cmp" id="cmp-range" min="0" max="100" value="50" aria-label="Reveal">`;
+}
+
+async function closeupSection(bed) {
+  const shots = shotsOf(bed.id);
+  const flagged = shots.filter(s => (s.symptoms || []).length).length;
+  let html = `<div class="section"><h2>Plant close-ups</h2><span class="hint">${shots.length ? `${shots.length}${flagged ? ` · ${flagged} tagged` : ''}` : ''}</span></div>
+    <div class="btn-row" style="margin-bottom:10px"><button class="btn primary" data-act="shot-camera" data-bed="${bed.id}">🔬 Take close-up</button><button class="btn" data-act="shot-library" data-bed="${bed.id}">🖼️ Add close-ups</button><button class="btn ghost" data-act="shot-guide">❓ What to shoot</button></div>`;
+  if (!shots.length) {
+    html += `<div class="empty"><strong>No close-ups yet</strong>Macro shots of a leaf, a stem base or a fruit tell you far more about health than a photo of the whole bed. Tag what you see and the app reads it back against the crop, its stage and your weather.</div>`;
+    return html;
+  }
+  html += `<div class="shot-grid">`;
+  for (const s of shots.slice(0, 24)) {
+    const p = s.plantingId ? plantingById(s.plantingId) : null;
+    const crop = p ? cropByKey(p.cropKey) : null;
+    const worst = shotFindings(s)[0];
+    const part = SHOT_PARTS.find(x => x.key === s.part);
+    html += `<button class="shot-cell ${worst ? sevClass(worst.sev) : ''}" data-act="shot-open" data-id="${s.id}" title="${esc(p && crop ? p.variety || crop.name : 'Close-up')}">
+      <img src="${await urlFor(s.id, 'thumb')}" alt="" loading="lazy">
+      <span class="sc-top">${part ? part.emoji : '📷'}${crop ? ` ${crop.emoji}` : ''}</span>
+      ${worst ? `<span class="sc-sev">${worst.sev === 'critical' ? '⛔' : worst.sev === 'serious' ? '⚠️' : worst.sev === 'warn' ? '△' : '✅'}</span>` : ''}
+      <span class="sc-date">${fmtDate(new Date(s.takenAt))}</span>
+    </button>`;
+  }
+  html += `</div>`;
+  if (shots.length > 24) html += `<p class="hint center">Showing the 24 most recent of ${shots.length}.</p>`;
+  return html;
 }
 
 function plantingCard(p, asOf, withSpark) {
@@ -719,7 +859,7 @@ function renderAnalytics() {
     <div class="stat ${t.ready ? 'good' : ''}"><div class="stat-label">Ready now</div><div class="stat-value">${t.ready}</div><div class="stat-sub">harvest window</div></div>
     <div class="stat"><div class="stat-label">Due in 7 d</div><div class="stat-value">${t.due7}</div><div class="stat-sub">first harvests</div></div>
     <div class="stat ${t.attention ? 'alert' : ''}"><div class="stat-label">Attention</div><div class="stat-value">${t.attention}</div><div class="stat-sub">${t.attention ? 'listed below' : 'all clear'}</div></div>
-    <div class="stat"><div class="stat-label">Photos</div><div class="stat-value">${S.photos.length}</div><div class="stat-sub">${plural(S.logs.length, 'check-in')}</div></div>
+    <div class="stat"><div class="stat-label">Close-ups</div><div class="stat-value">${S.shots.length}</div><div class="stat-sub">${plural(S.photos.length, 'bed photo')}</div></div>
     <div class="stat"><div class="stat-label">First frost</div><div class="stat-value">${frostDays != null ? frostDays : '—'}</div><div class="stat-sub">${frost ? `days · ${fmtDate(frost)}` : 'set in Settings'}</div></div>
   </div>`;
   html += renderWeather();
@@ -740,7 +880,7 @@ function renderAnalytics() {
   const attention = stats.map(x => ({ ...x, flags: [...x.st.attention, ...weatherFlagsFor(x.p, x.st)] })).filter(x => x.flags.length)
     .sort((a, b) => Math.max(...b.flags.map(f => sevRank[f.sev])) - Math.max(...a.flags.map(f => sevRank[f.sev])));
   html += `<div class="card"><h2>Needs attention</h2>`;
-  html += attention.length ? `<div class="flags">` + attention.map(({ p, st, flags }) => flags.map(f => `<div class="flag ${sevClass(f.sev)}" data-act="open-planting" data-id="${p.id}" style="cursor:pointer"><span class="fi">${f.sev === 'critical' ? '⛔' : f.sev === 'serious' ? '⚠️' : '△'}</span><div><b>${st.crop.emoji} ${esc(p.variety || st.crop.name)}</b> · ${esc(bedById(p.bedId)?.name || '')}<br><span class="hint">${esc(f.text)}</span></div></div>`).join('')).join('') + `</div>`
+  html += attention.length ? `<div class="flags">` + attention.map(({ p, st, flags }) => flags.map(f => `<div class="flag ${sevClass(f.sev)}" data-act="${f.shotId ? 'shot-open' : 'open-planting'}" data-id="${f.shotId || p.id}" style="cursor:pointer"><span class="fi">${f.sev === 'critical' ? '⛔' : f.sev === 'serious' ? '⚠️' : '△'}</span><div><b>${st.crop.emoji} ${esc(p.variety || st.crop.name)}</b> · ${esc(bedById(p.bedId)?.name || '')}<br><span class="hint">${esc(f.text)}</span></div></div>`).join('')).join('') + `</div>`
     : `<div class="flag good"><span class="fi">✅</span><div>All clear. Nothing is overdue, rated low, or facing a weather flag in the next 3 days.</div></div>`;
   html += `</div>`;
 
@@ -789,7 +929,7 @@ function renderSettings() {
     <div class="btn-row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-act="use-location">📍 Use my location</button></div>
   </form>
   <div class="card"><h2>Data</h2>
-    <p class="hint" style="margin-bottom:10px">Photos, tags, and check-ins are stored only on this device (${plural(S.photos.length, 'photo')}, ${plural(S.plantings.length, 'planting')}, ${plural(S.logs.length, 'check-in')}). Export a backup before switching phones or clearing the browser.</p>
+    <p class="hint" style="margin-bottom:10px">Photos, tags, and check-ins are stored only on this device (${plural(S.photos.length, 'bed photo')}, ${plural(S.shots.length, 'close-up')}, ${plural(S.plantings.length, 'planting')}, ${plural(S.logs.length, 'check-in')}). Export a backup before switching phones or clearing the browser.</p>
     <div class="btn-row"><button class="btn" data-act="export">⬇︎ Export backup</button><button class="btn" data-act="import">⬆︎ Import backup</button></div>
     <div class="btn-row" style="margin-top:8px"><button class="btn ghost" data-act="sample">Load sample garden</button>${S.plantings.some(p => p.sample) ? `<button class="btn ghost" data-act="clear-sample">Remove sample data</button>` : ''}</div>
     <div class="btn-row" style="margin-top:8px"><button class="btn danger" data-act="wipe">Erase everything</button></div>
@@ -808,6 +948,7 @@ function openSheet(html) {
   const root = $('#sheet-root');
   root.innerHTML = `<div class="sheet-backdrop" data-act="close-sheet"></div><div class="sheet" role="dialog"><div class="sheet-handle"></div>${html}</div>`;
   document.body.style.overflow = 'hidden';
+  hydrateShotImgs();
 }
 function closeSheet() { $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
 const xBtn = `<button class="icon-btn x" data-act="close-sheet" aria-label="Close">✕</button>`;
@@ -920,9 +1061,15 @@ function plantingSheet(id) {
     </dl>
     ${flags.length ? `<div class="flags" style="margin:0 0 12px">${flags.map(f => `<div class="flag ${sevClass(f.sev)}"><span class="fi">${f.sev === 'critical' ? '⛔' : f.sev === 'serious' ? '⚠️' : '△'}</span><div>${esc(f.text)}</div></div>`).join('')}</div>` : ''}
     <div class="btn-row">${p.status === 'active' ? `<button class="btn primary" data-act="log" data-id="${p.id}">📝 Check-in</button>` : ''}<button class="btn" data-act="edit-planting" data-id="${p.id}">Edit</button>${p.status === 'active' ? `<button class="btn" data-act="finish-planting" data-id="${p.id}" data-status="harvested">🧺 Harvested</button><button class="btn ghost" data-act="finish-planting" data-id="${p.id}" data-status="removed">Pulled</button>` : `<button class="btn" data-act="reactivate-planting" data-id="${p.id}">Reactivate</button>`}</div>
+    <div class="section"><h2>Close-ups</h2><span class="hint">${shotsOfPlanting(p.id).length || ''}</span></div>
+    <div class="btn-row" style="margin-bottom:8px"><button class="btn small" data-act="shot-camera" data-bed="${p.bedId}" data-planting="${p.id}">🔬 Take close-up</button><button class="btn small ghost" data-act="shot-library" data-bed="${p.bedId}" data-planting="${p.id}">🖼️ Add</button></div>
+    ${shotsOfPlanting(p.id).length ? `<div class="shot-grid" id="planting-shots">${shotsOfPlanting(p.id).slice(0, 12).map(s => { const worst = shotFindings(s)[0]; const part = SHOT_PARTS.find(x => x.key === s.part); return `<button class="shot-cell ${worst ? sevClass(worst.sev) : ''}" data-act="shot-open" data-id="${s.id}"><img data-shot="${s.id}" alt="" loading="lazy"><span class="sc-top">${part ? part.emoji : '📷'}</span>${worst ? `<span class="sc-sev">${worst.sev === 'critical' ? '⛔' : worst.sev === 'serious' ? '⚠️' : worst.sev === 'warn' ? '△' : '✅'}</span>` : ''}<span class="sc-date">${fmtDate(new Date(s.takenAt))}</span></button>`; }).join('')}</div>` : `<p class="hint">No close-ups of this plant yet. A leaf underside and a stem base are the two most useful frames.</p>`}
     ${crop.tips && crop.tips.length ? `<details style="margin-top:12px"><summary class="hint" style="cursor:pointer">Tips for ${esc(crop.name.toLowerCase())}</summary><ul class="tips">${crop.tips.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>` : ''}
     ${st.logs.length ? `<div class="section"><h2>Check-ins</h2></div>${st.logs.length >= 2 ? sparkline(st.logs) : ''}<div class="log-list">${st.logs.slice(0, 12).map(l => `<div class="log-item"><div class="h">${HEALTH[l.health] || '📝'}</div><div><div class="when">${fmtDT(new Date(l.at))}${l.flags && l.flags.length ? ' · ' + l.flags.map(k => (FLAGS.find(f => f[0] === k) || [k, k])[1]).join(', ') : ''}</div>${l.note ? esc(l.note) : ''}</div></div>`).join('')}</div>` : ''}`);
 }
+
+/* Fill any <img data-shot> placeholders a sheet just rendered. */
+function hydrateShotImgs() { $$('img[data-shot]').forEach(img => { urlFor(img.dataset.shot, 'thumb').then(u => { img.src = u; img.removeAttribute('data-shot'); }); }); }
 
 function photoSheet(id) {
   const ph = S.photos.find(p => p.id === id); if (!ph) return;
@@ -1070,6 +1217,7 @@ const ACT = {
     const b = bedById(el.dataset.id); const n = plantingsOf(b.id).length + photosOf(b.id).length;
     if (!confirm(`Delete “${b.name}”${n ? ` and its ${plural(photosOf(b.id).length, 'photo')} and ${plural(plantingsOf(b.id).length, 'planting')}` : ''}? This cannot be undone.`)) return;
     for (const ph of photosOf(b.id)) await deletePhoto(ph.id);
+    for (const s of shotsOf(b.id)) await deleteShot(s.id);
     for (const p of plantingsOf(b.id)) { for (const l of logsOf(p.id)) await DB.del('logs', l.id); await DB.del('plantings', p.id); }
     S.logs = S.logs.filter(l => l.bedId !== b.id); S.plantings = S.plantings.filter(p => p.bedId !== b.id);
     await DB.del('beds', b.id); S.beds = S.beds.filter(x => x.id !== b.id);
@@ -1102,6 +1250,42 @@ const ACT = {
   },
   'compare-start': () => { S.mode = 'compare'; S.compareId = null; render(); },
   'compare-end': () => { S.mode = 'view'; S.compareId = null; render(); },
+  'shot-camera': el => { S.shotBed = el.dataset.bed; S.shotPlanting = el.dataset.planting || null; $('#file-shot').click(); },
+  'shot-library': el => { S.shotBed = el.dataset.bed; S.shotPlanting = el.dataset.planting || null; $('#file-shot-lib').click(); },
+  'shot-open': el => shotSheet(el.dataset.id),
+  'shot-edit': el => { closeSheet(); shotTagForm(el.dataset.id, null); },
+  'shot-plant': el => { SF.plantingId = el.dataset.id || null; $$('[data-act="shot-plant"]').forEach(b => b.classList.toggle('on', (b.dataset.id || null) === SF.plantingId)); },
+  'shot-part': el => { SF.part = el.dataset.p; $$('[data-act="shot-part"]').forEach(b => b.classList.toggle('on', b.dataset.p === SF.part)); updatePartHow(); },
+  'shot-symptom': el => { const k = el.dataset.k; SF.symptoms = SF.symptoms.includes(k) ? SF.symptoms.filter(x => x !== k) : [...SF.symptoms, k]; el.classList.toggle('on', SF.symptoms.includes(k)); },
+  'shot-save': async () => {
+    const { batch, ...rest } = SF;
+    const pl = rest.plantingId ? plantingById(rest.plantingId) : null;
+    await saveShot({ ...rest, cropKey: pl ? pl.cropKey : null, note: (rest.note || '').trim() });
+    const next = batch && batch.filter(id => id !== rest.id);
+    SF = null; closeSheet(); render();
+    if (next && next.length) { toast(`Saved. ${plural(next.length, 'close-up')} left to tag.`); shotTagForm(next[0], next); }
+    else { toast('Close-up saved'); shotSheet(rest.id); }
+  },
+  'shot-delete': async el => {
+    if (!confirm('Delete this close-up?')) return;
+    await deleteShot(el.dataset.id); SF = null; closeSheet(); toast('Deleted'); render();
+  },
+  'shot-share': async el => {
+    const shot = S.shots.find(s => s.id === el.dataset.id); if (!shot) return;
+    const text = shotContext(shot);
+    try {
+      const blob = await DB.get('blobs', shot.id);
+      const file = blob && blob.full ? new File([blob.full], `closeup-${isoDate(new Date(shot.takenAt))}.jpg`, { type: 'image/jpeg' }) : null;
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], text, title: 'Garden close-up' }); return; }
+      if (navigator.share) { await navigator.share({ text, title: 'Garden close-up' }); return; }
+      await navigator.clipboard.writeText(text); toast('Context copied. Paste it with the photo.');
+    } catch (e) { if (e && e.name === 'AbortError') return; try { await navigator.clipboard.writeText(text); toast('Context copied. Paste it with the photo.'); } catch (_) { toast('Could not share on this browser'); } }
+  },
+  'shot-guide': () => openSheet(`<h3>🔬 What to shoot ${xBtn}</h3>
+    <p class="hint" style="margin-bottom:10px">Six frames answer nearly every plant-health question. You do not need all six every time, but the underside of a leaf is the one worth making a habit.</p>
+    <div class="log-list">${SHOT_PARTS.map(x => `<div class="log-item"><div class="h">${x.emoji}</div><div><b>${esc(x.label)}</b><br><span class="hint">${esc(x.how)}</span></div></div>`).join('')}</div>
+    <div class="section"><h2>Getting a usable frame</h2></div>
+    <ul class="tips">${CAPTURE_TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`),
   'garden-zoom': el => { S.gardenZoom = clamp(S.gardenZoom * (+el.dataset.z > 0 ? 1.25 : 0.8), 0.4, 4); render(); },
   'garden-arrange': () => { S.gardenArrange = !S.gardenArrange; render(); },
   'garden-plant': el => { if (S.gardenArrange) return; plantingForm(el.dataset.bed, null, +el.dataset.idx); },
@@ -1159,6 +1343,7 @@ const ACT = {
     if (!confirm('Delete this planting and its check-ins?')) return;
     for (const l of logsOf(el.dataset.id)) await DB.del('logs', l.id);
     S.logs = S.logs.filter(l => l.plantingId !== el.dataset.id);
+    for (const s of shotsOfPlanting(el.dataset.id)) await saveShot({ ...s, plantingId: null }); // keep the photo, drop the link
     await DB.del('plantings', el.dataset.id); S.plantings = S.plantings.filter(p => p.id !== el.dataset.id);
     closeSheet(); toast('Planting deleted'); render();
   },
@@ -1203,23 +1388,27 @@ async function exportData() {
   const toDataURL = blob => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
   const photos = [];
   for (const p of S.photos) { const b = await DB.get('blobs', p.id); photos.push({ ...p, full: b ? await toDataURL(b.full) : null, thumb: b && b.thumb ? await toDataURL(b.thumb) : null }); }
-  const data = { app: 'master-gardener', version: APP_VERSION, exportedAt: new Date().toISOString(), settings: S.settings, beds: S.beds, plantings: S.plantings, logs: S.logs, photos };
+  const shots = [];
+  for (const s of S.shots) { const b = await DB.get('blobs', s.id); shots.push({ ...s, full: b ? await toDataURL(b.full) : null, thumb: b && b.thumb ? await toDataURL(b.thumb) : null }); }
+  const data = { app: 'master-gardener', version: APP_VERSION, exportedAt: new Date().toISOString(), settings: S.settings, beds: S.beds, plantings: S.plantings, logs: S.logs, photos, shots };
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `master-gardener-${isoDate(new Date())}.json`; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-  toast(`Backup ready: ${plural(photos.length, 'photo')}, ${plural(S.plantings.length, 'planting')}`);
+  toast(`Backup ready: ${plural(photos.length, 'photo')}, ${plural(shots.length, 'close-up')}, ${plural(S.plantings.length, 'planting')}`);
 }
 async function importData(file) {
   try {
     const data = JSON.parse(await file.text());
     if (data.app !== 'master-gardener') throw new Error('Not a Master Gardener backup');
-    if (!confirm(`Import ${plural((data.beds || []).length, 'bed')}, ${plural((data.plantings || []).length, 'planting')}, ${plural((data.photos || []).length, 'photo')}? Existing items with the same id are replaced.`)) return;
+    if (!confirm(`Import ${plural((data.beds || []).length, 'bed')}, ${plural((data.plantings || []).length, 'planting')}, ${plural((data.photos || []).length, 'photo')}, ${plural((data.shots || []).length, 'close-up')}? Existing items with the same id are replaced.`)) return;
     toast('Importing…');
     await DB.putMany('beds', data.beds || []); await DB.putMany('plantings', data.plantings || []); await DB.putMany('logs', data.logs || []);
-    for (const p of data.photos || []) {
-      const { full, thumb, ...meta } = p;
-      if (full) { const fb = await (await fetch(full)).blob(); const tb = thumb ? await (await fetch(thumb)).blob() : fb; await DB.put('blobs', { id: meta.id, full: fb, thumb: tb }); }
-      await DB.put('photos', meta);
+    for (const [store, list] of [['photos', data.photos || []], ['shots', data.shots || []]]) {
+      for (const p of list) {
+        const { full, thumb, ...meta } = p;
+        if (full) { const fb = await (await fetch(full)).blob(); const tb = thumb ? await (await fetch(thumb)).blob() : fb; await DB.put('blobs', { id: meta.id, full: fb, thumb: tb }); }
+        await DB.put(store, meta);
+      }
     }
     if (data.settings) await DB.setSetting('settings', { ...DEFAULT_SETTINGS, ...data.settings });
     S.urls.forEach(u => { URL.revokeObjectURL(u.full); URL.revokeObjectURL(u.thumb); }); S.urls.clear();
@@ -1376,6 +1565,8 @@ $('#back-btn').addEventListener('click', () => go('#/beds'));
 $('#file-camera').addEventListener('change', e => { importFiles(e.target.files, S.bedId); e.target.value = ''; });
 $('#file-library').addEventListener('change', e => { importFiles(e.target.files, S.bedId); e.target.value = ''; });
 $('#file-import').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
+$('#file-shot').addEventListener('change', e => { importShots(e.target.files, S.shotBed || S.bedId, S.shotPlanting); e.target.value = ''; });
+$('#file-shot-lib').addEventListener('change', e => { importShots(e.target.files, S.shotBed || S.bedId, S.shotPlanting); e.target.value = ''; });
 const main = $('#view');
 ['dragenter', 'dragover'].forEach(t => main.addEventListener(t, e => { e.preventDefault(); main.classList.add('drag-over'); }));
 ['dragleave', 'drop'].forEach(t => main.addEventListener(t, e => { e.preventDefault(); main.classList.remove('drag-over'); }));

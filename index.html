@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Master Gardener</title>
   <meta name="description" content="Tag what is planted on photos of your own garden beds, track days to harvest, and watch how everything is doing.">
-  <meta name="theme-color" content="#07100c">
+  <meta name="theme-color" content="#FAF6EC">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Gardener">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -21,10 +21,10 @@
       <button class="icon-btn" id="back-btn" aria-label="Back" hidden>‹</button>
       <div class="brand">
         <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
-          <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#39ff9a"/><stop offset="1" stop-color="#1a9a90"/></linearGradient></defs>
+          <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2FA35C"/><stop offset="1" stop-color="#127C74"/></linearGradient></defs>
           <path d="M52 12C30 12 16 26 14 50c24-2 38-16 38-38z" fill="url(#lg)"/>
-          <path d="M16 48C24 38 34 30 46 20" stroke="#07100c" stroke-width="3" fill="none" stroke-linecap="round"/>
-          <rect x="6" y="6" width="52" height="52" rx="10" fill="none" stroke="#22d3ee" stroke-width="2" opacity=".8"/>
+          <path d="M16 48C24 38 34 30 46 20" stroke="#FAF6EC" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <rect x="6" y="6" width="52" height="52" rx="10" fill="none" stroke="#0E7490" stroke-width="2" opacity=".55"/>
         </svg>
         <div class="grow">
           <h1 id="title">Master Gardener</h1>
@@ -46,7 +46,10 @@
   <input type="file" id="file-camera" accept="image/*" capture="environment" hidden>
   <input type="file" id="file-library" accept="image/*" multiple hidden>
   <input type="file" id="file-import" accept="application/json,.json" hidden>
+  <input type="file" id="file-shot" accept="image/*" capture="environment" hidden>
+  <input type="file" id="file-shot-lib" accept="image/*" multiple hidden>
   <script src="crops.js"></script>
+  <script src="diagnose.js"></script>
   <script src="db.js"></script>
   <script src="weather.js"></script>
   <script src="app.js"></script>

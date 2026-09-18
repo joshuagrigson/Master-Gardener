@@ -6,7 +6,7 @@
 window.CROP_GROUPS = {
   tomato:   { name: 'Tomatoes',                 color: '#d94848' },
   brassica: { name: 'Broccoli & cabbage family', color: '#1a9a90' },
-  cucurbit: { name: 'Squash, cukes & melons',   color: '#b48f1c' },
+  cucurbit: { name: 'Squash, cukes & melons',   color: '#a8830f' },
   root:     { name: 'Roots, bulbs & tubers',    color: '#9463e0' },
   leafy:    { name: 'Leafy greens & herbs',     color: '#3a9e5a' },
   other:    { name: 'Beans, corn & flowers',    color: '#3b82e6' },
