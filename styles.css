@@ -356,14 +356,14 @@ input[type="range"].cmp { width: 100%; margin: 10px 0; accent-color: var(--accen
 .gtile.ready { box-shadow: 0 0 0 2px var(--accent), 0 0 14px rgba(57, 255, 154, 0.5); }
 .gt-em { font-size: 26px; line-height: 1; }
 .gt-name { font-size: 12px; font-weight: 700; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gt-days { font-size: 11px; color: var(--ink2); line-height: 1.15; white-space: nowrap; }
-.gt-days b { color: var(--ink); }
-.gt-days em { font-style: normal; display: block; }
+.gt-days { font-size: 11px; color: var(--ink2); line-height: 1.15; max-width: 100%; overflow: hidden; }
+.gt-days b { color: var(--ink); white-space: nowrap; }
+.gt-days em { font-style: normal; display: block; white-space: nowrap; }
 .gt-health { position: absolute; top: 2px; right: 4px; font-size: 13px; }
 .gt-bar { position: absolute; left: 4px; right: 4px; bottom: 3px; height: 3px; border-radius: 2px; background: rgba(0, 0, 0, 0.45); overflow: hidden; }
 .gt-bar i { display: block; height: 100%; background: var(--c); }
 .gt-bar i.warn { background: var(--st-warn); } .gt-bar i.serious { background: var(--st-serious); } .gt-bar i.critical { background: var(--st-critical); }
-.ggrid.md .gt-em { font-size: 22px; } .ggrid.md .gt-days em { display: inline; } .ggrid.md .gt-days em::before { content: " · "; }
+.ggrid.md .gt-em { font-size: 22px; }
 .ggrid.sm .gt-em { font-size: 18px; } .ggrid.sm .gt-name { font-size: 10px; } .ggrid.sm .gt-days { font-size: 10px; } .ggrid.sm .gt-days em { display: none; } .ggrid.sm .gt-health { display: none; }
 .ggrid.xs .gt-em { font-size: 15px; } .ggrid.xs .gt-name, .ggrid.xs .gt-days, .ggrid.xs .gt-health { display: none; } .ggrid.xs .gtile { padding: 2px; }
 
