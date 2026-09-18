@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -705,11 +705,21 @@ async function renderCompare(bed, photo) {
     <input type="range" class="cmp" id="cmp-range" min="0" max="100" value="50" aria-label="Reveal">`;
 }
 
+/* A drop target for close-ups. Also a button, so tapping it opens the file picker. */
+function dropzone(bedId, plantingId, label) {
+  return `<button class="dropzone" data-kind="shot" data-bed="${bedId}" ${plantingId ? `data-planting="${plantingId}"` : ''} data-act="shot-library">
+    <span class="dz-icon">🔬</span>
+    <span class="dz-main">Drop close-ups${label ? ` of ${esc(label)}` : ''} here</span>
+    <span class="hint">or tap to browse. Pasting an image works too.</span>
+  </button>`;
+}
+
 async function closeupSection(bed) {
   const shots = shotsOf(bed.id);
   const flagged = shots.filter(s => (s.symptoms || []).length).length;
   let html = `<div class="section"><h2>Plant close-ups</h2><span class="hint">${shots.length ? `${shots.length}${flagged ? ` · ${flagged} tagged` : ''}` : ''}</span></div>
-    <div class="btn-row" style="margin-bottom:10px"><button class="btn primary" data-act="shot-camera" data-bed="${bed.id}">🔬 Take close-up</button><button class="btn" data-act="shot-library" data-bed="${bed.id}">🖼️ Add close-ups</button><button class="btn ghost" data-act="shot-guide">❓ What to shoot</button></div>`;
+    <div class="btn-row" style="margin-bottom:10px"><button class="btn primary" data-act="shot-camera" data-bed="${bed.id}">🔬 Take close-up</button><button class="btn" data-act="shot-library" data-bed="${bed.id}">🖼️ Add close-ups</button><button class="btn ghost" data-act="shot-guide">❓ What to shoot</button></div>
+    ${dropzone(bed.id, null, null)}`;
   if (!shots.length) {
     html += `<div class="empty"><strong>No close-ups yet</strong>Macro shots of a leaf, a stem base or a fruit tell you far more about health than a photo of the whole bed. Tag what you see and the app reads it back against the crop, its stage and your weather.</div>`;
     return html;
@@ -1063,6 +1073,7 @@ function plantingSheet(id) {
     <div class="btn-row">${p.status === 'active' ? `<button class="btn primary" data-act="log" data-id="${p.id}">📝 Check-in</button>` : ''}<button class="btn" data-act="edit-planting" data-id="${p.id}">Edit</button>${p.status === 'active' ? `<button class="btn" data-act="finish-planting" data-id="${p.id}" data-status="harvested">🧺 Harvested</button><button class="btn ghost" data-act="finish-planting" data-id="${p.id}" data-status="removed">Pulled</button>` : `<button class="btn" data-act="reactivate-planting" data-id="${p.id}">Reactivate</button>`}</div>
     <div class="section"><h2>Close-ups</h2><span class="hint">${shotsOfPlanting(p.id).length || ''}</span></div>
     <div class="btn-row" style="margin-bottom:8px"><button class="btn small" data-act="shot-camera" data-bed="${p.bedId}" data-planting="${p.id}">🔬 Take close-up</button><button class="btn small ghost" data-act="shot-library" data-bed="${p.bedId}" data-planting="${p.id}">🖼️ Add</button></div>
+    ${dropzone(p.bedId, p.id, p.variety || crop.name)}
     ${shotsOfPlanting(p.id).length ? `<div class="shot-grid" id="planting-shots">${shotsOfPlanting(p.id).slice(0, 12).map(s => { const worst = shotFindings(s)[0]; const part = SHOT_PARTS.find(x => x.key === s.part); return `<button class="shot-cell ${worst ? sevClass(worst.sev) : ''}" data-act="shot-open" data-id="${s.id}"><img data-shot="${s.id}" alt="" loading="lazy"><span class="sc-top">${part ? part.emoji : '📷'}</span>${worst ? `<span class="sc-sev">${worst.sev === 'critical' ? '⛔' : worst.sev === 'serious' ? '⚠️' : worst.sev === 'warn' ? '△' : '✅'}</span>` : ''}<span class="sc-date">${fmtDate(new Date(s.takenAt))}</span></button>`; }).join('')}</div>` : `<p class="hint">No close-ups of this plant yet. A leaf underside and a stem base are the two most useful frames.</p>`}
     ${crop.tips && crop.tips.length ? `<details style="margin-top:12px"><summary class="hint" style="cursor:pointer">Tips for ${esc(crop.name.toLowerCase())}</summary><ul class="tips">${crop.tips.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>` : ''}
     ${st.logs.length ? `<div class="section"><h2>Check-ins</h2></div>${st.logs.length >= 2 ? sparkline(st.logs) : ''}<div class="log-list">${st.logs.slice(0, 12).map(l => `<div class="log-item"><div class="h">${HEALTH[l.health] || '📝'}</div><div><div class="when">${fmtDT(new Date(l.at))}${l.flags && l.flags.length ? ' · ' + l.flags.map(k => (FLAGS.find(f => f[0] === k) || [k, k])[1]).join(', ') : ''}</div>${l.note ? esc(l.note) : ''}</div></div>`).join('')}</div>` : ''}`);
@@ -1567,10 +1578,41 @@ $('#file-library').addEventListener('change', e => { importFiles(e.target.files,
 $('#file-import').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
 $('#file-shot').addEventListener('change', e => { importShots(e.target.files, S.shotBed || S.bedId, S.shotPlanting); e.target.value = ''; });
 $('#file-shot-lib').addEventListener('change', e => { importShots(e.target.files, S.shotBed || S.bedId, S.shotPlanting); e.target.value = ''; });
-const main = $('#view');
-['dragenter', 'dragover'].forEach(t => main.addEventListener(t, e => { e.preventDefault(); main.classList.add('drag-over'); }));
-['dragleave', 'drop'].forEach(t => main.addEventListener(t, e => { e.preventDefault(); main.classList.remove('drag-over'); }));
-main.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) { if (S.view !== 'bed') { toast('Open a bed first, then drop photos on it'); return; } importFiles(e.dataTransfer.files, S.bedId); } });
+/* Drag & drop. A .dropzone wins and takes close-ups (it works inside sheets too);
+   anywhere else on a bed view adds bed photos. Bound once at document level. */
+(() => {
+  const main = $('#view');
+  const zoneOf = t => (t && t.closest ? t.closest('.dropzone') : null);
+  const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  let hot = null;
+  const clear = () => { if (hot) hot.classList.remove('over'); hot = null; main.classList.remove('drag-over'); };
+  document.addEventListener('dragover', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const z = zoneOf(e.target);
+    if (z !== hot) { if (hot) hot.classList.remove('over'); hot = z; if (z) z.classList.add('over'); }
+    main.classList.toggle('drag-over', !z && S.view === 'bed');
+  });
+  document.addEventListener('dragleave', e => { if (!e.relatedTarget) clear(); });
+  document.addEventListener('drop', e => {
+    if (!hasFiles(e)) { clear(); return; }
+    e.preventDefault();
+    const z = zoneOf(e.target), files = e.dataTransfer.files;
+    clear();
+    if (!files.length) return;
+    if (z && z.dataset.kind === 'shot') { importShots(files, z.dataset.bed || S.bedId, z.dataset.planting || null); return; }
+    if (S.view === 'bed') importFiles(files, S.bedId);
+    else toast('Open a bed first, then drop photos on it');
+  });
+  /* Paste an image straight into the open bed as a close-up. */
+  document.addEventListener('paste', e => {
+    if (S.view !== 'bed' || !e.clipboardData || $('#sheet-root').firstChild) return;
+    const files = Array.from(e.clipboardData.files || []).filter(f => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    importShots(files, S.bedId, null);
+  });
+})();
 /* Swipe left/right across the bed view to shuffle beds (bound once; #view survives re-renders). */
 (() => {
   const view = $('#view'); let sw = null;
