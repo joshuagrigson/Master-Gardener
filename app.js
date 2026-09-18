@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.9.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -40,6 +40,7 @@ const S = {
   beds: [], photos: [], plantings: [], logs: [], shots: [], settings: { ...DEFAULT_SETTINGS },
   wx: null, wxErr: null, wxLoading: false, urls: new Map(), renderToken: 0,
   gardenZoom: 1, gardenArrange: false, shotBed: null, shotPlanting: null,
+  scrub: null, playing: false, playTimer: null,
 };
 const HEALTH = ['', '😟', '😕', '😐', '🙂', '🤩'];
 const FLAGS = [['watered', '💧 Watered'], ['fertilized', '🧪 Fertilized'], ['pests', '🐛 Pests'], ['disease', '🍂 Disease'], ['flowering', '🌸 Flowering'], ['fruit', '🍅 Fruit set'], ['harvested', '🧺 Harvested some'], ['pruned', '✂️ Pruned']];
@@ -88,7 +89,7 @@ function statsFor(p, asOf = new Date()) {
     if (recent) { const f = shotFindings(recent, null)[0]; if (f && f.sev !== 'good') attention.push({ sev: f.sev, text: `${f.title} (close-up ${fmtDate(new Date(recent.takenAt))})`, shotId: recent.id }); }
     if (health != null && health <= 2) attention.push({ sev: 'critical', text: `Rated ${health}/5 at last check-in` });
     if (!perennial && progress >= 1.3) attention.push({ sev: 'serious', text: `Past its harvest window by ${days - dtm} d` });
-    if (sinceLog != null && sinceLog >= 14) attention.push({ sev: 'warn', text: `No check-in for ${sinceLog} d` });
+    if (sinceLog != null && sinceLog >= 14) attention.push({ sev: 'warn', kind: 'stale-log', text: `No check-in for ${sinceLog} d` });
   }
   return { crop, group, color: group.color, planted, days, dtm, perennial, progress, eta, left, fruitDay, fruitLeft, stage, sev, logs, last, health, trend, sinceLog, attention };
 }
@@ -415,6 +416,44 @@ function shotTagForm(id, batch) {
 }
 function updatePartHow() { const el = $('#shot-part-how'); if (!el || !SF) return; const pt = SHOT_PARTS.find(p => p.key === SF.part); el.textContent = pt ? pt.how : ''; }
 
+/* ---------- Master Gardener context ---------- */
+const FAMILY = g => (g === 'tomato' || g === 'pepper') ? 'nightshade' : g === 'cucurbit' ? 'squash family' : g === 'brassica' ? 'cabbage family' : null;
+function rotationWarningFor(p) {
+  const crop = cropByKey(p.cropKey), fam = FAMILY(crop.group);
+  const planted = parseISO(p.plantedAt); if (!planted) return null;
+  const year = planted.getFullYear();
+  const mates = S.plantings.filter(x => x.bedId === p.bedId && x.id !== p.id);
+  if (fam) {
+    const prior = mates.find(x => { const d = parseISO(x.plantedAt); return d && d.getFullYear() < year && FAMILY(cropByKey(x.cropKey).group) === fam; });
+    if (prior) return `This bed grew ${fam} crops in ${parseISO(prior.plantedAt).getFullYear()} as well. Move the family to another bed next season — that is how soil disease gets a foothold.`;
+  }
+  if (crop.group === 'tomato') {
+    const spud = mates.find(x => x.cropKey === 'potato' && x.status === 'active');
+    if (spud) return 'Potatoes are in this same bed. Keep them apart in future — they share late blight and pass it back and forth.';
+  }
+  if (crop.key === 'potato') {
+    const tom = mates.find(x => cropByKey(x.cropKey).group === 'tomato' && x.status === 'active');
+    if (tom) return 'Tomatoes are in this same bed. Separate beds next time; late blight moves straight between them.';
+  }
+  return null;
+}
+function companionFor(p) {
+  const crop = cropByKey(p.cropKey);
+  const mates = S.plantings.filter(x => x.bedId === p.bedId && x.id !== p.id && x.status === 'active').map(x => cropByKey(x.cropKey));
+  if (crop.key === 'carrot' && mates.some(c => c.key === 'onion' || c.key === 'chives')) return 'Onions alongside are doing real work here — their smell puts carrot fly off the scent.';
+  if (crop.key === 'onion' && mates.some(c => c.key === 'carrot')) return 'Good pairing with the carrots: the onions mask them from carrot fly.';
+  if (crop.group === 'tomato' && mates.some(c => c.key === 'marigold' || c.key === 'basil')) return 'The marigolds and basil nearby earn their space around tomatoes.';
+  if (crop.group === 'leafy' && mates.some(c => c.group === 'berry')) return 'The shade off the berry canes slows this down from bolting. That is why it works in this spot.';
+  return null;
+}
+function daysToFirstFrost() { const f = nextFrost(S.settings.firstFrost); return f ? daysBetween(new Date(), f) : null; }
+function gardenerCtx(p, asOf = new Date()) {
+  const st = statsFor(p, asOf);
+  return { p, crop: st.crop, st, gdd: gddFor(p, st), wx: wxFlagsNow(), daysToFrost: daysToFirstFrost(),
+    rotationWarning: rotationWarningFor(p), companion: companionFor(p), fmtDate };
+}
+const readFor = (p, asOf) => gardenerRead(gardenerCtx(p, asOf));
+
 function wxFlagsNow() {
   const d = upcomingDays(3);
   return { hot: d.some(x => x.tmax != null && x.tmax >= 90), cold: d.some(x => x.tmin != null && x.tmin <= 36), wet: d.reduce((s, x) => s + (x.rain || 0), 0) > 1, dry: d.length > 0 && d.reduce((s, x) => s + (x.rain || 0), 0) < 0.1 };
@@ -444,9 +483,10 @@ async function shotSheet(id) {
       ${shot.note ? `<dt>Note</dt><dd>${esc(shot.note)}</dd>` : ''}
     </dl>
     ${tags ? `<div class="row wrap" style="margin-bottom:12px">${tags}</div>` : ''}
-    ${findings.length ? `<div class="section"><h2>Health read</h2></div><div class="flags">${findings.map(f => `<div class="flag ${sevClass(f.sev)}"><span class="fi">${f.sev === 'critical' ? '⛔' : f.sev === 'serious' ? '⚠️' : f.sev === 'warn' ? '△' : '✅'}</span><div><b>${esc(f.title)}</b><br><span class="hint">${esc(f.why)}</span><ul class="tips">${f.todo.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div></div>`).join('')}</div>
+    ${p && p.status === 'active' ? gardenerPanel(readFor(p), { max: 3 }) : ''}
+    ${findings.length ? `<div class="section"><h2>From what you tagged</h2></div><div class="flags">${findings.map(f => `<div class="flag ${sevClass(f.sev)}"><span class="fi">${f.sev === 'critical' ? '⛔' : f.sev === 'serious' ? '⚠️' : f.sev === 'warn' ? '△' : '✅'}</span><div><b>${esc(f.title)}</b><br><span class="hint">${esc(f.why)}</span><ul class="tips">${f.todo.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div></div>`).join('')}</div>
       <p class="hint" style="margin-top:8px">Field heuristics from what you tagged, this crop's stage and your forecast. They tell you what to check, not what it definitely is.</p>`
-      : `<div class="empty" style="margin-bottom:12px"><strong>No symptoms tagged</strong>Tag what you see and a health read appears here.</div>`}
+      : `<p class="hint" style="margin-bottom:12px">No symptoms tagged on this shot. The read above is the Master Gardener's take on the plant as it stands; tagging what you see sharpens it.</p>`}
     <div class="btn-row" style="margin-top:12px"><button class="btn" data-act="shot-edit" data-id="${shot.id}">Edit tags</button><button class="btn" data-act="shot-share" data-id="${shot.id}">↗ Share with context</button>${p ? `<button class="btn ghost" data-act="open-planting" data-id="${p.id}">Open planting</button>` : ''}</div>
     <details style="margin-top:12px"><summary class="hint" style="cursor:pointer">How to shoot a diagnostic close-up</summary>
       <ul class="tips">${SHOT_PARTS.map(x => `<li><b>${x.emoji} ${esc(x.label)}.</b> ${esc(x.how)}</li>`).join('')}${CAPTURE_TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>`);
@@ -477,12 +517,12 @@ function go(hash) { if (location.hash === hash) render(); else location.hash = h
 function route() {
   const h = location.hash.replace(/^#\/?/, '');
   const [seg, id] = h.split('/');
-  if (seg === 'bed' && id && bedById(id)) { if (S.view !== 'bed' || S.bedId !== id) { S.photoId = null; S.mode = 'view'; S.compareId = null; S.selCell = null; } S.view = 'bed'; S.bedId = id; }
+  if (seg === 'bed' && id && bedById(id)) { if (S.view !== 'bed' || S.bedId !== id) { S.photoId = null; S.mode = 'view'; S.compareId = null; S.selCell = null; S.scrub = null; stopPlay(); } S.view = 'bed'; S.bedId = id; }
   else if (seg === 'analytics') S.view = 'analytics';
   else if (seg === 'garden') S.view = 'garden';
   else if (seg === 'settings') S.view = 'settings';
   else S.view = 'beds';
-  if (S.view !== 'bed') { S.mode = 'view'; S.compareId = null; S.alignDraft = null; }
+  if (S.view !== 'bed') { S.mode = 'view'; S.compareId = null; S.alignDraft = null; S.scrub = null; stopPlay(); }
   render();
 }
 
@@ -511,7 +551,7 @@ function renderTopbar() {
     acts.innerHTML = `<button class="icon-btn" data-act="take-photo" title="Take photo">📷</button><button class="icon-btn" data-act="add-photo" title="Add from library">🖼️</button><button class="icon-btn" data-act="edit-bed" data-id="${bed.id}" title="Bed settings">⋯</button>`;
   } else {
     back.hidden = true; title.textContent = 'Master Gardener';
-    sub.textContent = S.view === 'analytics' ? 'Live analytics' : S.view === 'settings' ? 'Settings & data' : S.view === 'garden' ? 'Garden map · north up' : 'Bed mapper · harvest tracker';
+    sub.textContent = S.view === 'analytics' ? 'Garden check · live analytics' : S.view === 'settings' ? 'Settings & data' : S.view === 'garden' ? 'Garden map · north up' : 'Bed mapper · harvest tracker';
     acts.innerHTML = S.view === 'analytics' ? `<button class="icon-btn" data-act="refresh-wx" title="Refresh weather">↻</button>`
       : S.view === 'beds' ? `<button class="icon-btn" data-act="add-bed" title="Add bed">＋</button>`
       : S.view === 'garden' ? `<button class="icon-btn" data-act="garden-zoom" data-z="-1" title="Zoom out">−</button><button class="icon-btn" data-act="garden-zoom" data-z="1" title="Zoom in">＋</button><button class="btn small ${S.gardenArrange ? 'on' : ''}" data-act="garden-arrange">${S.gardenArrange ? '✓ Done' : '⤧ Arrange'}</button>` : '';
@@ -569,15 +609,29 @@ async function renderBeds() {
 }
 
 function currentPhoto(bed) {
+  if (S.scrub != null) { // timeline: the most recent photo taken at or before the scrub date
+    const ps = photosOf(bed.id).filter(p => new Date(p.takenAt) <= new Date(S.scrub));
+    return ps.length ? ps[ps.length - 1] : null;
+  }
   if (S.photoId === 'map') return null;
   if (S.photoId) { const p = S.photos.find(x => x.id === S.photoId && x.bedId === bed.id); if (p) return p; }
   return latestPhoto(bed.id);
 }
 function asOfFor(bed, photo) {
+  if (S.scrub != null) return new Date(S.scrub);
   if (!photo) return new Date();
   const latest = latestPhoto(bed.id);
   if (latest && latest.id === photo.id) return new Date();
   return new Date(photo.takenAt);
+}
+/* The window the timeline covers: from the first thing that happened in this bed to today. */
+function bedSpan(bed) {
+  const dates = [...plantingsOf(bed.id).map(p => parseISO(p.plantedAt)), ...photosOf(bed.id).map(p => new Date(p.takenAt))].filter(d => d && !isNaN(d));
+  if (!dates.length) return null;
+  const start = startOfDay(new Date(Math.min(...dates.map(d => +d))));
+  const end = startOfDay(new Date());
+  const days = daysBetween(start, end);
+  return days < 1 ? null : { start, end, days };
 }
 
 async function renderBed() {
@@ -585,7 +639,8 @@ async function renderBed() {
   const photos = photosOf(bed.id);
   const photo = currentPhoto(bed);
   const asOf = asOfFor(bed, photo);
-  const historical = photo && daysBetween(asOf, new Date()) !== 0 && !(latestPhoto(bed.id) && latestPhoto(bed.id).id === photo.id);
+  const historical = S.scrub != null ? daysBetween(asOf, new Date()) !== 0
+    : photo && daysBetween(asOf, new Date()) !== 0 && !(latestPhoto(bed.id) && latestPhoto(bed.id).id === photo.id);
   let stage = '';
   if (S.mode === 'compare' && photo) stage = await renderCompare(bed, photo);
   else stage = await renderStage(bed, photo, asOf, historical);
@@ -599,6 +654,23 @@ async function renderBed() {
     }).join('')}</div>
     <button class="icon-btn" data-act="bed-step" data-d="1" aria-label="Next bed" title="${esc(bedAt(bi + 1).name)}">›</button>
   </div>`;
+
+  const span = bedSpan(bed);
+  const timeline = !span || S.mode !== 'view' ? '' : (() => {
+    const day = S.scrub != null ? daysBetween(span.start, new Date(S.scrub)) : span.days;
+    const at = addDays(span.start, day);
+    const live = S.scrub == null;
+    const marks = photosOf(bed.id).map(ph => { const d = clamp(daysBetween(span.start, new Date(ph.takenAt)), 0, span.days); return `<i style="left:${((d / span.days) * 100).toFixed(2)}%" title="${fmtDate(new Date(ph.takenAt))}"></i>`; }).join('');
+    const growing = plantingsOf(bed.id).filter(p => activeAt(p, at)).length;
+    return `<div class="timeline">
+      <div class="tl-head"><button class="icon-btn" data-act="tl-play" aria-label="Play the season">${S.playing ? '⏸' : '▶'}</button>
+        <div class="grow"><b>${live ? 'Today' : fmtDateY(at)}</b><span class="hint"> · ${live ? 'live' : `${plural(span.days - day, 'day')} ago`} · ${plural(growing, 'planting')} in the ground</span></div>
+        ${live ? '' : `<button class="btn small" data-act="tl-now">Now</button>`}</div>
+      <div class="tl-track"><div class="tl-marks">${marks}</div>
+        <input type="range" id="tl-range" min="0" max="${span.days}" step="1" value="${day}" aria-label="Slide through the season"></div>
+      <div class="tl-ends"><span>${fmtDate(span.start)} · first went in</span><span>today</span></div>
+    </div>`;
+  })();
 
   const strip = `<div class="strip">
     <button class="thumb map ${!photo ? 'active' : ''}" data-act="pick-photo" data-id="map">🗺️<span class="thumb-date">PLAN</span></button>
@@ -634,11 +706,12 @@ async function renderBed() {
   const all = plantingsOf(bed.id);
   const active = all.filter(p => p.status === 'active').sort((a, b) => a.plantedAt.localeCompare(b.plantedAt));
   const done = all.filter(p => p.status !== 'active').sort((a, b) => (b.endedAt || '').localeCompare(a.endedAt || ''));
-  let list = `<div class="section"><h2>Plantings</h2><span class="hint">${plural(active.length, 'active')}</span></div>`;
+  let list = bedCheckCard(bed);
+  list += `<div class="section"><h2>Plantings</h2><span class="hint">${plural(active.length, 'active')}</span></div>`;
   list += active.length ? active.map(p => plantingCard(p, new Date(), false)).join('') : `<div class="empty"><strong>Nothing tagged in this bed yet</strong>Tap a cell on the photo or plan, or use ＋ Plant.</div>`;
   if (done.length) list += `<div class="section"><h2>Finished</h2></div>` + done.map(p => plantingCard(p, new Date(), false)).join('');
   list += await closeupSection(bed);
-  return switcher + stage + toolbar + strip + list;
+  return switcher + stage + timeline + toolbar + strip + list;
 }
 
 async function renderStage(bed, photo, asOf, historical) {
@@ -684,8 +757,8 @@ async function renderStage(bed, photo, asOf, historical) {
     <div class="labels">${compass}${S.mode === 'align' ? '' : labels}${handles}</div>
     ${!photo ? `<div class="north-rose" title="Plan is drawn north-up">N<br>▲</div>` : ''}
     <span class="hud-corner tl"></span><span class="hud-corner tr"></span><span class="hud-corner bl"></span><span class="hud-corner br"></span>
-    ${photo ? '<div class="scan"></div>' : ''}
-    ${historical ? `<div class="asof">AS OF <b>${fmtDateY(asOf).toUpperCase()}</b> · ${daysBetween(asOf, new Date())} D AGO</div>` : ''}
+    ${photo && S.scrub == null ? '<div class="scan"></div>' : ''}
+    ${historical ? `<div class="asof">${fmtDateY(asOf)} · ${daysBetween(asOf, new Date())} d ago</div>` : ''}
   </div></div>`;
 }
 async function renderCompare(bed, photo) {
@@ -712,6 +785,25 @@ function dropzone(bedId, plantingId, label) {
     <span class="dz-main">Drop close-ups${label ? ` of ${esc(label)}` : ''} here</span>
     <span class="hint">or tap to browse. Pasting an image works too.</span>
   </button>`;
+}
+
+/* The Master Gardener's take on just this bed. */
+function bedCheckCard(bed) {
+  const now = new Date();
+  const act = plantingsOf(bed.id).filter(p => p.status === 'active');
+  if (!act.length) return '';
+  const rows = act.map(p => {
+    const st = statsFor(p, now), read = readFor(p, now);
+    const flags = [...st.attention, ...weatherFlagsFor(p, st)].filter(f => f.kind !== 'stale-log').sort((a, b) => sevRank[b.sev] - sevRank[a.sev]);
+    const sev = flags[0] ? flags[0].sev : read.sev;
+    const text = flags[0] ? flags[0].text : (st.left != null && st.left <= 0 && st.progress < 1.3 ? 'Ready to pick. Keeping up with it is what keeps it producing.' : read.tasks[0] || read.headline);
+    return { p, st, crop: st.crop, sev, text, pri: sevRank[sev] };
+  }).sort((a, b) => b.pri - a.pri || (a.st.left ?? 9e9) - (b.st.left ?? 9e9));
+  const top = rows.slice(0, 3);
+  const worst = top[0].sev;
+  return `<div class="card gcheck bedcheck"><div class="section" style="margin:0 0 8px"><h2>🧑‍🌾 Bed check</h2><span class="hint">${plural(act.length, 'planting')}</span></div>
+    <ol class="gc-list">${top.map(r => `<li class="gc-item ${sevClass(r.sev)}" data-act="open-planting" data-id="${r.p.id}" style="cursor:pointer"><b>${r.crop.emoji} ${esc(r.p.variety || r.crop.name)}</b><span>${esc(r.text)}</span></li>`).join('')}</ol>
+    ${act.length > 3 ? `<p class="hint" style="margin-top:8px">${act.length - 3} more below.</p>` : ''}</div>`;
 }
 
 async function closeupSection(bed) {
@@ -872,7 +964,19 @@ function renderAnalytics() {
     <div class="stat"><div class="stat-label">Close-ups</div><div class="stat-value">${S.shots.length}</div><div class="stat-sub">${plural(S.photos.length, 'bed photo')}</div></div>
     <div class="stat"><div class="stat-label">First frost</div><div class="stat-value">${frostDays != null ? frostDays : '—'}</div><div class="stat-sub">${frost ? `days · ${fmtDate(frost)}` : 'set in Settings'}</div></div>
   </div>`;
+  const gc = buildGardenCheck();
+  html += `<div class="card gcheck"><div class="section" style="margin:0 0 8px"><h2>🧑‍🌾 Garden check</h2><span class="hint">${fmtDate(now)}</span></div>
+    <p class="gc-summary">${esc(gc.check.summary)}</p>
+    ${gc.check.items.length ? `<ol class="gc-list">${gc.check.items.slice(0, 9).map(i => `<li class="gc-item ${sevClass(i.sev)}" ${i.plantingId || i.shotId ? `data-act="${i.shotId ? 'shot-open' : 'open-planting'}" data-id="${i.shotId || i.plantingId}" style="cursor:pointer"` : ''}><b>${esc(i.title)}</b><span>${esc(i.detail)}</span></li>`).join('')}</ol>` : ''}
+    ${gc.check.items.length > 9 ? `<p class="hint center" style="margin-top:8px">Showing the top 9 of ${gc.check.items.length}.</p>` : ''}
+    <details style="margin-top:10px"><summary class="hint" style="cursor:pointer">Standing principles</summary><ul class="tips">${GARDENER_PRINCIPLES.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>
+  </div>`;
   html += renderWeather();
+  if (gc.windows.length) {
+    html += `<div class="card"><h2>What to plant now</h2><p class="hint" style="margin-bottom:8px">${gc.dtf != null ? `About ${gc.dtf} days to the average first frost.` : 'Set your frost dates in Settings for sharper timing.'} Sorted by what fits the remaining season.</p>
+      <div class="variety-chips">${gc.windows.slice(0, 14).map(w => `<span class="chip ${w.fit === 'go' ? 'on' : ''}" title="${esc(w.note)}">${w.crop.emoji} ${esc(w.crop.name)} <span class="hint">${w.crop.dtm}d</span></span>`).join('')}</div>
+      <p class="hint" style="margin-top:8px">Solid chips fit comfortably. Outlined ones only finish under a cover.</p></div>`;
+  }
 
   const active = S.plantings.filter(p => p.status === 'active');
   const stats = active.map(p => ({ p, st: statsFor(p, now) }));
@@ -899,10 +1003,46 @@ function renderAnalytics() {
   if (S.wx && S.wx.partial) html += `<p class="hint center" style="margin-top:8px">Weather history is partial, so GDD totals may undercount.</p>`;
   return html;
 }
+/* Rain against evaporation for the last 7 days, and what it means. Shared by the weather card and the check. */
+function waterStatus() {
+  if (!S.wx) return null;
+  const days = [];
+  for (let i = -7; i < 3; i++) { const r = S.wx.days.get(isoDate(addDays(new Date(), i))); if (r) days.push({ ...r, off: i }); }
+  const past = days.filter(x => x.off < 0), fut = days.filter(x => x.off >= 0);
+  const rain7 = past.reduce((s, x) => s + (x.rain || 0), 0), et7 = past.reduce((s, x) => s + (x.et0 || 0), 0);
+  const next3 = fut.reduce((s, x) => s + (x.rain || 0), 0), deficit = et7 - rain7;
+  if (deficit > 1.0 && next3 < 0.5) return { sev: 'serious', text: `The last week evaporated about ${deficit.toFixed(1)} in more than it rained and little is coming. Water deeply, then mulch over the moist soil.`, deficit, rain7, et7, next3 };
+  if (deficit > 0.5 && next3 < 0.25) return { sev: 'warn', text: `Running roughly ${deficit.toFixed(1)} in behind on moisture. Check the top 2 in and water deeply if it is dry.`, deficit, rain7, et7, next3 };
+  return { sev: 'good', text: 'Rain has about kept up with evaporation this week. Nothing to do.', deficit, rain7, et7, next3 };
+}
+
+/* ---------- the Master Gardener's garden check ---------- */
+function buildGardenCheck() {
+  const now = new Date();
+  const active = S.plantings.filter(p => p.status === 'active');
+  const reads = active.map(p => {
+    const st = statsFor(p, now);
+    const bed = bedById(p.bedId);
+    const flags = [...st.attention, ...weatherFlagsFor(p, st)].sort((a, b) => sevRank[b.sev] - sevRank[a.sev]);
+    return { p, crop: st.crop, st, bedName: bed ? bed.name : '', read: readFor(p, now), flag: flags[0] || null };
+  });
+  let emptyCells = 0;
+  for (const bed of S.beds) {
+    const taken = new Set(); plantingsOf(bed.id).filter(p => p.status === 'active').forEach(p => p.cells.forEach(c => taken.add(c)));
+    for (let i = 0; i < bed.rows * bed.cols; i++) if (!taken.has(i) && !isMasked(bed, i)) emptyCells++;
+  }
+  const rotationWarnings = [...new Set(active.map(p => rotationWarningFor(p)).filter(Boolean))];
+  const staleBeds = S.beds.filter(b => { const lp = latestPhoto(b.id); return !lp || daysBetween(new Date(lp.takenAt), now) > 30; }).map(b => b.name);
+  const dtf = daysToFirstFrost();
+  const windows = plantingWindows({ crops: CROPS, daysToFrost: dtf, month: now.getMonth() + 1 });
+  return { check: gardenCheck({ reads, water: waterStatus(), daysToFrost: dtf, emptyCells, windows, rotationWarnings, staleBeds }), windows, reads, dtf };
+}
+
 function renderWeather() {
   const wx = S.wx;
   let html = `<div class="card"><h2>Weather · ${esc(S.settings.place || 'your garden')}</h2>`;
   if (!wx) { html += `<p class="hint">${S.wxLoading ? 'Loading Open-Meteo…' : S.wxErr ? `Weather unavailable (${esc(S.wxErr)}). Set your location in Settings and refresh.` : 'Loading…'}</p></div>`; return html; }
+  const ws = waterStatus();
   const cur = wx.current || {};
   const d = WX.describe(cur.weather_code ?? 0);
   const today = isoDate(new Date());
@@ -912,14 +1052,11 @@ function renderWeather() {
   const rain7 = past.reduce((s, x) => s + (x.rain || 0), 0);
   const et7 = past.reduce((s, x) => s + (x.et0 || 0), 0);
   const rainNext3 = fut.slice(0, 3).reduce((s, x) => s + (x.rain || 0), 0);
-  const deficit = et7 - rain7;
   const hot = fut.slice(0, 3).some(x => x.tmax >= 90), cold = fut.slice(0, 3).some(x => x.tmin <= 36);
   html += `<div class="wx-now"><div class="ic">${d.icon}</div><div><div class="big">${cur.temperature_2m != null ? Math.round(cur.temperature_2m) + '°' : '—'}</div><div class="desc">${d.text}${cur.relative_humidity_2m != null ? ` · ${cur.relative_humidity_2m}% RH` : ''}${cur.wind_speed_10m != null ? ` · ${Math.round(cur.wind_speed_10m)} mph` : ''}</div></div>
     <div class="right"><dl class="kv"><dt>Rain 7 d</dt><dd class="mono">${rain7.toFixed(2)} in</dd><dt>ET₀ 7 d</dt><dd class="mono">${et7.toFixed(2)} in</dd><dt>Next 3 d</dt><dd class="mono">${rainNext3.toFixed(2)} in</dd></dl></div></div>`;
   html += `<div class="flags">`;
-  if (deficit > 1.0 && rainNext3 < 0.5) html += `<div class="flag serious"><span class="fi">💧</span><div><b>Water deeply.</b> The last week evaporated ~${deficit.toFixed(1)} in more than it rained and little is coming. Deep and infrequent, then mulch over moist soil.</div></div>`;
-  else if (deficit > 0.5 && rainNext3 < 0.25) html += `<div class="flag warn"><span class="fi">💧</span><div><b>Check soil moisture.</b> Running ~${deficit.toFixed(1)} in behind; water if the top 2 in are dry.</div></div>`;
-  else html += `<div class="flag good"><span class="fi">💧</span><div><b>Moisture looks OK.</b> Rain has roughly kept up with evaporation this week.</div></div>`;
+  if (ws) html += `<div class="flag ${sevClass(ws.sev)}"><span class="fi">💧</span><div>${esc(ws.text)}</div></div>`;
   if (hot) html += `<div class="flag warn"><span class="fi">🌡️</span><div><b>Heat ahead (≥ 90°F).</b> Tomatoes and peppers will drop blossoms; that is heat, not a deficiency. Water in the morning.</div></div>`;
   if (cold) html += `<div class="flag critical"><span class="fi">🥶</span><div><b>Frost watch (≤ 36°F).</b> Cover tender crops or pick what is close.</div></div>`;
   html += `</div>`;
@@ -1055,12 +1192,16 @@ function plantingSheet(id) {
   const p = plantingById(id); if (!p) return;
   const st = statsFor(p, new Date()); const bed = bedById(p.bedId); const crop = st.crop;
   const gdd = gddFor(p, st);
+  const latest = shotsOfPlanting(p.id)[0];
   const flags = p.status === 'active' ? [...st.attention, ...weatherFlagsFor(p, st)] : [];
   const pct = st.perennial ? 100 : clamp(st.progress * 100, 0, 100);
   const meterClass = st.sev === 'good' ? '' : st.sev === 'warn' ? 'warn' : st.sev === 'serious' ? 'serious' : 'critical';
   openSheet(`<h3><span>${crop.emoji}</span><span class="grow">${esc(p.variety || crop.name)} ${p.variety ? `<small style="color:var(--ink2);font-weight:500">${esc(crop.name)}</small>` : ''}</span>${xBtn}</h3>
     <div class="row wrap" style="margin-bottom:10px"><span class="badge" style="border-color:${st.color};color:var(--ink)"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:${st.color};display:inline-block"></span> ${esc(bed ? bed.name : '')}</span><span class="badge">${plural(p.cells.length, 'cell')}</span><span class="badge ${sevClass(st.sev)}">${esc(st.stage)}</span>${p.status !== 'active' ? `<span class="badge">${p.status}</span>` : ''}</div>
     ${p.status === 'active' ? `<div class="meter" style="margin:0 0 12px"><i class="${meterClass}" style="width:${pct.toFixed(1)}%"></i></div>` : ''}
+    ${latest ? `<img class="shot-preview" data-shot-full="${latest.id}" data-act="shot-open" data-id="${latest.id}" alt="Latest close-up" style="cursor:pointer">
+      <p class="hint" style="margin:-6px 0 12px">Latest close-up · ${esc((SHOT_PARTS.find(x => x.key === latest.part) || {}).label || 'plant')} · ${fmtDate(new Date(latest.takenAt))}</p>` : ''}
+    ${p.status === 'active' ? gardenerPanel(readFor(p)) : ''}
     <dl class="kv" style="margin-bottom:12px">
       <dt>Planted</dt><dd>${fmtDateY(st.planted)} · ${p.method === 'seed' ? 'direct seeded' : 'transplanted'} · <b>day ${st.days}</b></dd>
       ${st.perennial ? '' : `<dt>First harvest</dt><dd>≈ ${fmtDateY(st.eta)} (${st.left > 0 ? relDays(st.left) : st.progress < 1.3 ? 'in the window now' : `${-st.left} d past`}) · ${st.dtm} days total</dd>`}
@@ -1080,7 +1221,22 @@ function plantingSheet(id) {
 }
 
 /* Fill any <img data-shot> placeholders a sheet just rendered. */
-function hydrateShotImgs() { $$('img[data-shot]').forEach(img => { urlFor(img.dataset.shot, 'thumb').then(u => { img.src = u; img.removeAttribute('data-shot'); }); }); }
+function hydrateShotImgs() {
+  $$('img[data-shot]').forEach(img => { urlFor(img.dataset.shot, 'thumb').then(u => { img.src = u; img.removeAttribute('data-shot'); }); });
+  $$('img[data-shot-full]').forEach(img => { urlFor(img.dataset.shotFull, 'full').then(u => { img.src = u; img.removeAttribute('data-shot-full'); }); });
+}
+
+/* The Master Gardener's read, rendered. */
+function gardenerPanel(read, opts = {}) {
+  const icon = read.sev === 'critical' ? '⛔' : read.sev === 'serious' ? '⚠️' : '🧑‍🌾';
+  return `<div class="gardener ${sevClass(read.sev)}">
+    <div class="gd-head"><span class="gd-icon">${icon}</span><div><b>${esc(read.headline)}</b><div class="gd-doing">${esc(read.doing)}</div></div></div>
+    ${read.tasks.length ? `<div class="gd-block"><h4>This week</h4><ul class="tips">${read.tasks.slice(0, opts.max || 4).map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+    ${read.watch.length ? `<div class="gd-block"><h4>Watch for</h4><ul class="tips">${read.watch.slice(0, 3).map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+    ${read.heat ? `<div class="gd-block"><h4>Heat units</h4><p class="hint">${esc(read.heat)}</p></div>` : ''}
+    ${read.timing.length ? `<div class="gd-block"><h4>Season &amp; placement</h4><ul class="tips">${read.timing.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+  </div>`;
+}
 
 function photoSheet(id) {
   const ph = S.photos.find(p => p.id === id); if (!ph) return;
@@ -1200,6 +1356,8 @@ const ACT = {
   'close-sheet': () => closeSheet(),
   'open-bed': el => go(`#/bed/${el.dataset.id}`),
   'bed-step': el => stepBed(+el.dataset.d),
+  'tl-play': () => { if (S.playing) { stopPlay(); } else { const span = bedSpan(bedById(S.bedId)); if (!span) return; S.playing = true; S.scrub = +span.start; } render(); },
+  'tl-now': () => { stopPlay(); S.scrub = null; render(); },
   'add-bed': () => bedForm(null),
   'edit-bed': el => bedForm(bedById(el.dataset.id)),
   'grid-step': el => { const d = gridDraft(); if (!d) return; const f = el.dataset.f; setGrid(d, d.rows + (f === 'rows' ? +el.dataset.d : 0), d.cols + (f === 'cols' ? +el.dataset.d : 0)); },
@@ -1497,6 +1655,24 @@ function afterRender() {
     const end = ev => { ptrs.delete(ev.pointerId); startGesture(); };
     stage.addEventListener('pointerup', end); stage.addEventListener('pointercancel', end);
   }
+  /* Season timeline: slide from the day the first thing went in through to today. */
+  const tl = $('#tl-range');
+  if (tl) {
+    const bed = bedById(S.bedId), span = bedSpan(bed);
+    let raf = 0;
+    const paint = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; refreshScrubView(span); }); };
+    const setDay = d => { const v = clamp(d, 0, span.days); tl.value = v; S.scrub = v >= span.days ? null : +addDays(span.start, v); paint(); };
+    tl.addEventListener('input', () => setDay(+tl.value));
+    if (S.playing) {
+      const step = Math.max(1, Math.ceil(span.days / 40));
+      clearInterval(S.playTimer);
+      S.playTimer = setInterval(() => {
+        const next = +tl.value + step;
+        if (next >= span.days) { setDay(span.days); stopPlay(); render(); return; }
+        setDay(next);
+      }, 200);
+    }
+  }
   const chips = $('#bed-switch-chips');
   if (chips) { const on = $('.bed-chip.on', chips); if (on) on.scrollIntoView({ block: 'nearest', inline: 'center' }); }
   const garden = $('#garden');
@@ -1538,6 +1714,25 @@ function afterRender() {
     range.addEventListener('input', apply); apply();
   }
 }
+function stopPlay() { S.playing = false; clearInterval(S.playTimer); S.playTimer = null; }
+/* Repaint only the stage and the timeline header, so dragging stays smooth. */
+async function refreshScrubView(span) {
+  const bed = bedById(S.bedId); if (!bed) return;
+  const photo = currentPhoto(bed), asOf = asOfFor(bed, photo);
+  const historical = S.scrub != null ? daysBetween(asOf, new Date()) !== 0 : false;
+  const html = await renderStage(bed, photo, asOf, historical);
+  const wrap = $('.stage-wrap'); if (wrap) wrap.outerHTML = html;
+  const live = S.scrub == null, at = live ? new Date() : new Date(S.scrub);
+  const growing = plantingsOf(bed.id).filter(p => activeAt(p, at)).length;
+  const head = $('.tl-head .grow');
+  if (head) head.innerHTML = `<b>${live ? 'Today' : fmtDateY(at)}</b><span class="hint"> · ${live ? 'live' : `${plural(daysBetween(at, new Date()), 'day')} ago`} · ${plural(growing, 'planting')} in the ground</span>`;
+  const bar = $('.tl-head'), nowBtn = $('[data-act="tl-now"]');
+  if (live && nowBtn) nowBtn.remove();
+  else if (!live && !nowBtn && bar) bar.insertAdjacentHTML('beforeend', `<button class="btn small" data-act="tl-now">Now</button>`);
+  /* keep the photo strip pointing at whatever the stage is showing */
+  $$('.strip .thumb').forEach(t => t.classList.toggle('active', photo ? t.dataset.id === photo.id : t.dataset.id === 'map'));
+}
+
 function redrawAlign(stage) {
   const bed = bedById(S.bedId); const q = S.alignDraft; const H = homography(q);
   const svg = $('svg.overlay', stage);

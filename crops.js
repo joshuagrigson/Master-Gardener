@@ -70,7 +70,7 @@ window.CROPS = [
     varieties: [{ name: 'Georgia Southern', dtm: 75 }, { name: 'Vates', dtm: 65 }], tips: ['A Southern fall staple; frost improves flavor.'] },
   { key: 'arugula', name: 'Arugula', emoji: '🥬', group: 'leafy', stages: 'leafy', from: 'seed', dtm: 40, base: 40, varieties: [], tips: ['Bolts fast in heat; sow small amounts often.'] },
   { key: 'mustard', name: 'Mustard greens', emoji: '🥬', group: 'leafy', stages: 'leafy', from: 'seed', dtm: 45, base: 40, varieties: [{ name: 'Southern Giant Curled', dtm: 45 }], tips: [] },
-  { key: 'microgreens', name: 'Microgreens', emoji: '🌱', group: 'leafy', stages: 'leafy', from: 'seed', dtm: 12, base: 40, varieties: [{ name: 'Mild Mix', dtm: 12 }], tips: ['Indoor tray only; never the beds.'] },
+  { key: 'microgreens', name: 'Microgreens', emoji: '🌱', group: 'leafy', stages: 'leafy', from: 'seed', dtm: 12, base: 40, indoor: true, varieties: [{ name: 'Mild Mix', dtm: 12 }], tips: ['Indoor tray only; never the beds.'] },
   { key: 'broccoli', name: 'Broccoli', emoji: '🥦', group: 'brassica', stages: 'head', from: 'transplant', dtm: 60, s2t: 35, base: 40,
     varieties: [{ name: 'DeCicco', dtm: 48 }, { name: 'Calabrese', dtm: 65 }, { name: 'Waltham 29', dtm: 85 }], tips: ['Zone 8a fall crop: transplant in August-September.', 'Cut the main head while the buds are tight; side shoots follow for weeks.'] },
   { key: 'cauliflower', name: 'Cauliflower', emoji: '🥦', group: 'brassica', stages: 'head', from: 'transplant', dtm: 65, s2t: 35, base: 40,
