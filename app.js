@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -45,6 +45,8 @@ const HEALTH = ['', '😟', '😕', '😐', '🙂', '🤩'];
 const FLAGS = [['watered', '💧 Watered'], ['fertilized', '🧪 Fertilized'], ['pests', '🐛 Pests'], ['disease', '🍂 Disease'], ['flowering', '🌸 Flowering'], ['fruit', '🍅 Fruit set'], ['harvested', '🧺 Harvested some'], ['pruned', '✂️ Pruned']];
 
 const bedById = id => S.beds.find(b => b.id === id);
+const bedAt = i => S.beds[((i % S.beds.length) + S.beds.length) % S.beds.length];
+const stepBed = d => { const i = S.beds.findIndex(b => b.id === S.bedId); if (i < 0 || S.beds.length < 2) return; go(`#/bed/${bedAt(i + d).id}`); };
 const photosOf = bedId => S.photos.filter(p => p.bedId === bedId).sort((a, b) => a.takenAt.localeCompare(b.takenAt));
 const latestPhoto = bedId => { const ps = photosOf(bedId); return ps.length ? ps[ps.length - 1] : null; };
 const plantingsOf = bedId => S.plantings.filter(p => p.bedId === bedId);
@@ -391,7 +393,9 @@ function renderTopbar() {
   const back = $('#back-btn'), title = $('#title'), sub = $('#subtitle'), acts = $('#topbar-actions');
   if (S.view === 'bed') {
     const bed = bedById(S.bedId); const n = plantingsOf(bed.id).filter(p => p.status === 'active').length;
-    back.hidden = false; title.textContent = bed.name; sub.textContent = `${bed.rows}×${bed.cols} · ${n} active · ${plural(photosOf(bed.id).length, 'photo')}`;
+    const i = S.beds.findIndex(b => b.id === bed.id);
+    back.hidden = false; title.textContent = bed.name;
+    sub.textContent = `${i + 1} of ${S.beds.length} · ${bed.rows}×${bed.cols} · ${n} active · ${plural(photosOf(bed.id).length, 'photo')}`;
     acts.innerHTML = `<button class="icon-btn" data-act="take-photo" title="Take photo">📷</button><button class="icon-btn" data-act="add-photo" title="Add from library">🖼️</button><button class="icon-btn" data-act="edit-bed" data-id="${bed.id}" title="Bed settings">⋯</button>`;
   } else {
     back.hidden = true; title.textContent = 'Master Gardener';
@@ -473,6 +477,16 @@ async function renderBed() {
   let stage = '';
   if (S.mode === 'compare' && photo) stage = await renderCompare(bed, photo);
   else stage = await renderStage(bed, photo, asOf, historical);
+  const bi = S.beds.findIndex(b => b.id === bed.id);
+  const switcher = S.beds.length < 2 ? '' : `<div class="bed-switch">
+    <button class="icon-btn" data-act="bed-step" data-d="-1" aria-label="Previous bed" title="${esc(bedAt(bi - 1).name)}">‹</button>
+    <div class="bed-switch-chips" id="bed-switch-chips">${S.beds.map(b => {
+      const n = plantingsOf(b.id).filter(p => p.status === 'active').length;
+      const ready = plantingsOf(b.id).filter(p => p.status === 'active').map(p => statsFor(p)).filter(s => !s.perennial && s.progress >= 1 && s.progress < 1.3).length;
+      return `<button class="chip bed-chip ${b.id === bed.id ? 'on' : ''}" data-act="open-bed" data-id="${b.id}" title="${plural(n, 'active planting')}${ready ? `, ${ready} ready` : ''}">${esc(b.name)}${ready ? `<span class="rdy">●</span>` : ''}<span class="hint">${n}</span></button>`;
+    }).join('')}</div>
+    <button class="icon-btn" data-act="bed-step" data-d="1" aria-label="Next bed" title="${esc(bedAt(bi + 1).name)}">›</button>
+  </div>`;
 
   const strip = `<div class="strip">
     <button class="thumb map ${!photo ? 'active' : ''}" data-act="pick-photo" data-id="map">🗺️<span class="thumb-date">PLAN</span></button>
@@ -511,7 +525,7 @@ async function renderBed() {
   let list = `<div class="section"><h2>Plantings</h2><span class="hint">${plural(active.length, 'active')}</span></div>`;
   list += active.length ? active.map(p => plantingCard(p, new Date(), false)).join('') : `<div class="empty"><strong>Nothing tagged in this bed yet</strong>Tap a cell on the photo or plan, or use ＋ Plant.</div>`;
   if (done.length) list += `<div class="section"><h2>Finished</h2></div>` + done.map(p => plantingCard(p, new Date(), false)).join('');
-  return stage + toolbar + strip + list;
+  return switcher + stage + toolbar + strip + list;
 }
 
 async function renderStage(bed, photo, asOf, historical) {
@@ -1027,6 +1041,7 @@ function renderBedSummary() {
 const ACT = {
   'close-sheet': () => closeSheet(),
   'open-bed': el => go(`#/bed/${el.dataset.id}`),
+  'bed-step': el => stepBed(+el.dataset.d),
   'add-bed': () => bedForm(null),
   'edit-bed': el => bedForm(bedById(el.dataset.id)),
   'grid-step': el => { const d = gridDraft(); if (!d) return; const f = el.dataset.f; setGrid(d, d.rows + (f === 'rows' ? +el.dataset.d : 0), d.cols + (f === 'cols' ? +el.dataset.d : 0)); },
@@ -1282,6 +1297,8 @@ function afterRender() {
     const end = ev => { ptrs.delete(ev.pointerId); startGesture(); };
     stage.addEventListener('pointerup', end); stage.addEventListener('pointercancel', end);
   }
+  const chips = $('#bed-switch-chips');
+  if (chips) { const on = $('.bed-chip.on', chips); if (on) on.scrollIntoView({ block: 'nearest', inline: 'center' }); }
   const garden = $('#garden');
   if (garden && S.gardenArrange) {
     const scale = +garden.dataset.scale, minX = +garden.dataset.minx, minY = +garden.dataset.miny;
@@ -1346,7 +1363,13 @@ document.addEventListener('submit', async ev => {
   const s = { ...S.settings, place: (fd.get('place') || '').trim(), lat: +fd.get('lat') || DEFAULT_SETTINGS.lat, lon: +fd.get('lon') || DEFAULT_SETTINGS.lon, firstFrost: (fd.get('firstFrost') || '').trim(), lastFrost: (fd.get('lastFrost') || '').trim(), rows: clamp(+fd.get('rows') || 2, 1, 8), cols: clamp(+fd.get('cols') || 4, 1, 10) };
   S.settings = s; await DB.setSetting('settings', s); toast('Settings saved'); loadWeather(true);
 });
-document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && $('#sheet-root').firstChild) closeSheet(); });
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape' && $('#sheet-root').firstChild) { closeSheet(); return; }
+  if (S.view !== 'bed' || S.mode !== 'view' || $('#sheet-root').firstChild) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName)) return;
+  if (ev.key === 'ArrowLeft') { ev.preventDefault(); stepBed(-1); }
+  if (ev.key === 'ArrowRight') { ev.preventDefault(); stepBed(1); }
+});
 $$('.tab').forEach(t => t.addEventListener('click', () => go(t.dataset.tab === 'beds' ? '#/beds' : `#/${t.dataset.tab}`)));
 window.addEventListener('resize', () => { if (S.view === 'garden') render(); });
 $('#back-btn').addEventListener('click', () => go('#/beds'));
@@ -1357,6 +1380,21 @@ const main = $('#view');
 ['dragenter', 'dragover'].forEach(t => main.addEventListener(t, e => { e.preventDefault(); main.classList.add('drag-over'); }));
 ['dragleave', 'drop'].forEach(t => main.addEventListener(t, e => { e.preventDefault(); main.classList.remove('drag-over'); }));
 main.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) { if (S.view !== 'bed') { toast('Open a bed first, then drop photos on it'); return; } importFiles(e.dataTransfer.files, S.bedId); } });
+/* Swipe left/right across the bed view to shuffle beds (bound once; #view survives re-renders). */
+(() => {
+  const view = $('#view'); let sw = null;
+  const live = () => S.view === 'bed' && S.mode === 'view' && S.beds.length > 1 && !$('#sheet-root').firstChild;
+  view.addEventListener('pointerdown', ev => {
+    sw = live() && !ev.target.closest('.strip, .stage-toolbar, .bed-switch-chips, input, textarea, select, button') ? { x: ev.clientX, y: ev.clientY, t: Date.now() } : null;
+  });
+  view.addEventListener('pointerup', ev => {
+    const s = sw; sw = null; if (!s || !live()) return;
+    const dx = ev.clientX - s.x, dy = ev.clientY - s.y;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 2 || Date.now() - s.t > 800) return;
+    stepBed(dx < 0 ? 1 : -1);
+  });
+  view.addEventListener('pointercancel', () => { sw = null; });
+})();
 window.addEventListener('hashchange', route);
 window.addEventListener('resize', () => { if (S.view === 'bed') render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); loadWeather(false); } });

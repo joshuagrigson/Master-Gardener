@@ -201,6 +201,16 @@ main#view.drag-over { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .stage-toolbar .btn { flex: none; }
 .align-help { font-size: 12px; color: var(--cyan); padding: 6px 0; }
 
+/* Bed switcher */
+.bed-switch { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.bed-switch .icon-btn { font-size: 22px; line-height: 1; flex: none; }
+.bed-switch-chips { display: flex; gap: 6px; overflow-x: auto; flex: 1; scrollbar-width: none; padding: 2px 0; }
+.bed-switch-chips::-webkit-scrollbar { display: none; }
+.bed-chip { flex: none; font-weight: 600; gap: 6px; scroll-snap-align: center; }
+.bed-chip .hint { font-size: 10px; opacity: 0.75; border-left: 1px solid var(--line2); padding-left: 6px; margin-left: 1px; }
+.bed-chip .rdy { color: var(--accent); font-size: 9px; text-shadow: 0 0 6px var(--accent); }
+.bed-chip.on { background: rgba(57, 255, 154, 0.14); }
+
 /* Photo strip */
 .strip { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 6px; scrollbar-width: none; }
 .strip::-webkit-scrollbar { display: none; }
