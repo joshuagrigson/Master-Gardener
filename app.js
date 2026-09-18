@@ -3,7 +3,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 /* ---------- utilities ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -124,6 +124,15 @@ function cellPoly(H, rows, cols, r, c) {
   const u0 = c / cols, u1 = (c + 1) / cols, v0 = r / rows, v1 = (r + 1) / rows;
   return [H(u0, v0), H(u1, v0), H(u1, v1), H(u0, v1)];
 }
+/* Re-assign the bed's compass corners onto the quad's geometric corners for the direction the camera was facing.
+   Looking N: far-left of the photo is the NW corner. Looking S: far-left is SE. Looking E: far-left is NE. Looking W: far-left is SW. */
+const FACINGS = { N: ['TL', 'TR', 'BR', 'BL'], S: ['BR', 'BL', 'TL', 'TR'], E: ['BL', 'TL', 'TR', 'BR'], W: ['TR', 'BR', 'BL', 'TL'] };
+function facingQuad(quad, facing) {
+  const sorted = [...quad].sort((a, b) => a[1] - b[1]);
+  const top = sorted.slice(0, 2).sort((a, b) => a[0] - b[0]), bot = sorted.slice(2).sort((a, b) => a[0] - b[0]);
+  const g = { TL: top[0], TR: top[1], BL: bot[0], BR: bot[1] };
+  return (FACINGS[facing] || FACINGS.N).map(k => [...g[k]]);
+}
 const centroid = poly => [poly.reduce((s, p) => s + p[0], 0) / poly.length, poly.reduce((s, p) => s + p[1], 0) / poly.length];
 const pts = poly => poly.map(([x, y]) => `${(x * 1000).toFixed(1)},${(y * 1000).toFixed(1)}`).join(' ');
 
@@ -230,12 +239,36 @@ async function importFiles(files, bedId) {
       const id = uid();
       const takenAt = new Date(f.lastModified && f.lastModified > 0 ? f.lastModified : Date.now());
       const prev = latestPhoto(bedId);
-      const photo = { id, bedId, takenAt: takenAt.toISOString(), w, h, quad: prev ? prev.quad.map(p => [...p]) : defaultQuad(false), note: '', createdAt: new Date().toISOString() };
+      const photo = { id, bedId, takenAt: takenAt.toISOString(), w, h, quad: prev ? prev.quad.map(p => [...p]) : defaultQuad(false), facing: prev ? (prev.facing || 'N') : 'N', note: '', createdAt: new Date().toISOString() };
       await DB.put('blobs', { id, full, thumb });
       await savePhoto(photo); lastId = id;
     } catch (e) { console.error(e); toast(`Could not read ${f.name}`); }
   }
   if (lastId) { S.photoId = lastId; S.mode = 'view'; S.compareId = null; toast('Photo added. Align the grid, then tap cells to tag what is growing.', 3200); }
+  render();
+}
+
+function loadImage(url) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('decode failed')); i.src = url; }); }
+async function rotateBlob(blob, q) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImage(url);
+    const c = document.createElement('canvas'); c.width = img.naturalHeight; c.height = img.naturalWidth;
+    const g = c.getContext('2d'); g.translate(c.width, 0); g.rotate(Math.PI / 2); g.drawImage(img, 0, 0);
+    return await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', q));
+  } finally { URL.revokeObjectURL(url); }
+}
+/* Rotate a stored photo 90° clockwise; the alignment quad rotates with it so tags stay on their cells. */
+async function rotatePhoto(id) {
+  const ph = S.photos.find(p => p.id === id); const b = await DB.get('blobs', id); if (!ph || !b) return;
+  toast('Rotating…');
+  const full = await rotateBlob(b.full, 0.86), thumb = await rotateBlob(b.thumb || b.full, 0.8);
+  await DB.put('blobs', { id, full, thumb });
+  const u = S.urls.get(id); if (u) { URL.revokeObjectURL(u.full); URL.revokeObjectURL(u.thumb); S.urls.delete(id); }
+  const turn = ([x, y]) => [+(1 - y).toFixed(4), +x.toFixed(4)];
+  const quad = ph.quad.map(turn);
+  await savePhoto({ ...ph, w: ph.h, h: ph.w, quad });
+  if (S.mode === 'align' && S.alignDraft) S.alignDraft = S.alignDraft.map(turn);
   render();
 }
 
@@ -357,8 +390,10 @@ async function renderBed() {
 
   let toolbar = '';
   if (S.mode === 'align') {
-    toolbar = `<div class="align-help">Drag the four corners onto the bed's real corners (NW is the north-west corner of the bed). Grid: ${bed.rows} rows N→S × ${bed.cols} columns W→E.</div>
-      <div class="btn-row"><button class="btn primary" data-act="align-save">Save alignment</button><button class="btn" data-act="align-reset">Reset</button><button class="btn ghost" data-act="align-cancel">Cancel</button></div>`;
+    const facing = S.alignFacing || photo.facing || 'N';
+    toolbar = `<div class="align-help">1. Tap the direction you were facing when you took the photo. 2. Drag the four corners onto the bed's real corners (the labels say which compass corner each one is). Grid: ${bed.rows} rows N→S × ${bed.cols} columns W→E.</div>
+      <div class="row" style="margin-bottom:8px"><span class="hint" style="white-space:nowrap">Camera looking</span><div class="seg grow">${['N', 'E', 'S', 'W'].map(f => `<button type="button" class="${facing === f ? 'on' : ''}" data-act="set-facing" data-f="${f}">${f}</button>`).join('')}</div><button class="btn small" data-act="rotate-photo" data-id="${photo.id}" title="Rotate photo 90°">↻ Rotate</button></div>
+      <div class="btn-row"><button class="btn primary" data-act="align-save">Save alignment</button><button class="btn" data-act="align-reset">Reset corners</button><button class="btn ghost" data-act="align-cancel">Cancel</button></div>`;
   } else if (S.mode === 'compare') {
     toolbar = `<div class="align-help">Tap another photo in the strip to compare against. Slide to reveal.</div>
       <div class="btn-row"><button class="btn" data-act="compare-end">Done comparing</button></div>`;
@@ -705,7 +740,7 @@ function photoSheet(id) {
     <label class="field"><span>Taken</span><input id="ph-at" type="datetime-local" value="${toLocalDT(new Date(ph.takenAt))}"></label>
     <label class="field"><span>Note</span><textarea id="ph-note" placeholder="Anything to remember about this shot">${esc(ph.note || '')}</textarea></label>
     <p class="hint" style="margin-bottom:10px">${ph.w}×${ph.h} · older photos show tags as of their date, so back-dating a photo places it correctly on the timeline.</p>
-    <div class="btn-row"><button class="btn primary" data-act="save-photo" data-id="${ph.id}">Save</button><button class="btn danger" data-act="delete-photo" data-id="${ph.id}">Delete photo</button></div>`);
+    <div class="btn-row"><button class="btn primary" data-act="save-photo" data-id="${ph.id}">Save</button><button class="btn" data-act="rotate-photo-sheet" data-id="${ph.id}">↻ Rotate 90°</button><button class="btn danger" data-act="delete-photo" data-id="${ph.id}">Delete photo</button></div>`);
 }
 function bedForm(existing) {
   const b = existing || { id: uid(), name: `Bed ${S.beds.length + 1}`, subtitle: '', rows: S.settings.rows, cols: S.settings.cols, sort: S.beds.length + 1, createdAt: new Date().toISOString() };
@@ -749,17 +784,20 @@ const ACT = {
     if (S.mode === 'compare') { if (id === 'map') return; const cur = currentPhoto(bedById(S.bedId)); if (cur && cur.id === id) return; S.compareId = id; render(); return; }
     S.photoId = id; S.selCell = null; S.mode = 'view'; S.alignDraft = null; render();
   },
-  'align-start': () => { const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph) return; S.mode = 'align'; S.alignDraft = ph.quad.map(p => [...p]); render(); },
-  'align-reset': () => { S.alignDraft = defaultQuad(false); render(); },
-  'align-cancel': () => { S.mode = 'view'; S.alignDraft = null; render(); },
+  'align-start': () => { const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph) return; S.mode = 'align'; S.alignDraft = ph.quad.map(p => [...p]); S.alignFacing = ph.facing || 'N'; render(); },
+  'align-reset': () => { S.alignDraft = facingQuad(defaultQuad(false), S.alignFacing || 'N'); render(); },
+  'align-cancel': () => { S.mode = 'view'; S.alignDraft = null; S.alignFacing = null; render(); },
+  'set-facing': el => { S.alignFacing = el.dataset.f; S.alignDraft = facingQuad(S.alignDraft || defaultQuad(false), S.alignFacing); render(); },
+  'rotate-photo': el => rotatePhoto(el.dataset.id),
   'align-save': async () => {
     const bed = bedById(S.bedId); const ph = currentPhoto(bed); if (!ph || !S.alignDraft) return;
-    await savePhoto({ ...ph, quad: S.alignDraft.map(p => [+p[0].toFixed(4), +p[1].toFixed(4)]) });
-    S.mode = 'view'; S.alignDraft = null; toast('Grid aligned'); render();
+    await savePhoto({ ...ph, quad: S.alignDraft.map(p => [+p[0].toFixed(4), +p[1].toFixed(4)]), facing: S.alignFacing || ph.facing || 'N' });
+    S.mode = 'view'; S.alignDraft = null; S.alignFacing = null; toast('Grid aligned'); render();
   },
   'compare-start': () => { S.mode = 'compare'; S.compareId = null; render(); },
   'compare-end': () => { S.mode = 'view'; S.compareId = null; render(); },
   'photo-info': el => photoSheet(el.dataset.id),
+  'rotate-photo-sheet': async el => { closeSheet(); await rotatePhoto(el.dataset.id); toast('Rotated'); },
   'save-photo': async el => {
     const ph = S.photos.find(p => p.id === el.dataset.id); if (!ph) return;
     const d = new Date($('#ph-at').value); if (isNaN(d)) { toast('Enter a valid date'); return; }
